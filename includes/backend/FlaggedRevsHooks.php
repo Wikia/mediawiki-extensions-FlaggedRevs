@@ -209,6 +209,27 @@ class FlaggedRevsHooks implements
 				if ( !FRPageConfig::configIsReset( $config ) ) {
 					FlaggedRevsLog::updateStabilityLogOnMove( $ntitle, $otitle, $reason, $user );
 				}
+
+				$oldFp = FlaggableWikiPage::getTitleInstance($otitle);
+				$oldFp->loadPageData(IDBAccessObject::READ_LATEST);
+
+				if ($oldFp->getStableRev() &&
+					$services->getPermissionManager()->userCan('autoreview', $user, $ntitle)) {
+
+					$revRecord = $services->getRevisionLookup()
+						->getRevisionByTitle($ntitle, 0, IDBAccessObject::READ_LATEST);
+
+					if ($revRecord) {
+						FlaggedRevs::autoReviewEdit(
+							$fa,
+							$user,
+							$revRecord,
+							null,
+							true,
+							true
+						);
+					}
+				}
 			} elseif ( FlaggedRevs::autoReviewNewPages() ) {
 				$fa = FlaggableWikiPage::getTitleInstance( $ntitle );
 				$fa->loadPageData( IDBAccessObject::READ_LATEST );
