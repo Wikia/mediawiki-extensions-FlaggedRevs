@@ -210,16 +210,17 @@ class FlaggedRevsHooks implements
 					FlaggedRevsLog::updateStabilityLogOnMove( $ntitle, $otitle, $reason, $user );
 				}
 
-				$oldFp = FlaggableWikiPage::getTitleInstance($otitle);
-				$oldFp->loadPageData(IDBAccessObject::READ_LATEST);
-
-				if ($oldFp->getStableRev() &&
-					$services->getPermissionManager()->userCan('autoreview', $user, $ntitle)) {
-
+				$canUserAutoreview = $services->getPermissionManager()->userCan( 'autoreview', $user, $ntitle );
+				if (
+					$fa->isReviewable() &&
+					// this 1 pending review is the move revision, if there are more then don't autoreview
+					$fa->getPendingRevCount() === 1 &&
+					$canUserAutoreview
+				) {
 					$revRecord = $services->getRevisionLookup()
-						->getRevisionByTitle($ntitle, 0, IDBAccessObject::READ_LATEST);
+						->getRevisionByTitle( $ntitle, 0, IDBAccessObject::READ_LATEST );
 
-					if ($revRecord) {
+					if ( $revRecord ) {
 						FlaggedRevs::autoReviewEdit(
 							$fa,
 							$user,
