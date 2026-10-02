@@ -560,7 +560,7 @@ class FlaggedRevsUIHooks implements
 			# See T433020: is the actor of a matching review log entry hidden?
 			# CAST rev_id (not ls_value) so the log_search(ls_field, ls_value)
 			# index stays usable on production-scale wikis.
-			$dbr = $this->dbProvider->getReplicaDatabase();
+			$dbr = $pager->getDatabase();
 			$logging = $dbr->tableName( 'logging' );
 			$logSearch = $dbr->tableName( 'log_search' );
 			$revIdAsString = $dbr->buildStringCast( 'rev_id' );
