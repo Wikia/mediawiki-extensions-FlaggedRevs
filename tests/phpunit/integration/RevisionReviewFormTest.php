@@ -10,9 +10,10 @@ use MediaWiki\Title\Title;
 use MediaWiki\User\User;
 use MediaWikiIntegrationTestCase;
 use RevisionReviewForm;
+use Wikimedia\Timestamp\ConvertibleTimestamp;
 
 /**
- * @covers RevisionReviewForm
+ * @covers \RevisionReviewForm
  * @group Database
  */
 class RevisionReviewFormTest extends MediaWikiIntegrationTestCase {
@@ -113,6 +114,9 @@ class RevisionReviewFormTest extends MediaWikiIntegrationTestCase {
 		$page = $this->getExistingTestPage();
 		$origContent = __METHOD__ . '-original';
 
+		// The edits must use different timestamps - T439912
+		ConvertibleTimestamp::setFakeTime( ConvertibleTimestamp::time(), 1 );
+
 		$this->editPage( $page, $origContent, '', NS_MAIN, $author );
 		$this->editPage( $page, __METHOD__, '', NS_MAIN, $author );
 
@@ -131,7 +135,7 @@ class RevisionReviewFormTest extends MediaWikiIntegrationTestCase {
 
 		$curContent = $this->getServiceContainer()
 			->getRevisionLookup()
-			->getKnownCurrentRevision( $page )
+			->getKnownLatestRevision( $page )
 			->getContent( SlotRecord::MAIN );
 
 		$currentText = $this->getServiceContainer()

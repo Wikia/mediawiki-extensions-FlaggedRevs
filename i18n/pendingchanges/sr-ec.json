@@ -1,6 +1,7 @@
 {
 	"@metadata": {
 		"authors": [
+			"Aca",
 			"Acamicamacaraca",
 			"BadDog",
 			"Kizule",
@@ -11,7 +12,7 @@
 			"Михајло Анђелковић"
 		]
 	},
-	"pendingchanges": "Странице са променама на чекању",
+	"pendingchanges": "Странице са изменама на чекању",
 	"pendingchanges-legend": "Списак проверених страница са променама које чекају проверу",
 	"pendingchanges-list": "Ова страница приказује [[{{MediaWiki:Validationpage}}|проверене]] странице које имају једну или више измена на чекању.",
 	"pendingchanges-none": "Тренутно нема страница које испуњавају ове критеријуме.",
@@ -31,11 +32,8 @@
 	"pendingchanges-table-page": "Страница",
 	"pendingchanges-table-size": "Величина",
 	"pendingchanges-table-pending-since": "Од",
-	"pendingchanges-table-quality": "Квалитет",
 	"pendingchanges-table-watching": "Активни надгледачи",
-	"pendingchanges-table-history": "Историја",
 	"pendingchanges-table-review": "Прегледај",
-	"pendingchanges-table-revision-history": "Историја",
-	"pendingchanges-table-footer": "Тренутно, има {{PLURAL:$1|$1 измена|$1 измене}} на чекању",
+	"pendingchanges-table-footer": "Тренутно, има {{PLURAL:$2|$1 измена|$1 измене}} на чекању",
 	"pendingchanges-filter-submit-button-text": "Филтрирај странице на чекању"
 }

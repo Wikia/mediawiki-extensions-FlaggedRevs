@@ -1,17 +1,15 @@
 <?php
 
-use MediaWiki\Cache\CacheKeyHelper;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Page\CacheKeyHelper;
 use MediaWiki\Page\PageIdentity;
 use MediaWiki\Page\WikiPage;
-use MediaWiki\Revision\RevisionRecord;
 use MediaWiki\Storage\PreparedUpdate;
 use Wikimedia\Assert\PreconditionException;
-use Wikimedia\Rdbms\Database;
+use Wikimedia\ObjectCache\MapCacheLRU;
 use Wikimedia\Rdbms\IDatabase;
 use Wikimedia\Rdbms\IDBAccessObject;
 use Wikimedia\Rdbms\IReadableDatabase;
-use Wikimedia\Rdbms\SelectQueryBuilder;
 
 /**
  * Class representing a MediaWiki article and history
@@ -29,8 +27,6 @@ class FlaggableWikiPage extends WikiPage {
 	private $pendingRevCount = null;
 	/** @var array|null */
 	private $pageConfig = null;
-	/** @var bool|null */
-	private $syncedInTracking = null;
 	/** @var PreparedUpdate|null */
 	private $preparedUpdate = null;
 	/** @var MapCacheLRU|null */
@@ -94,7 +90,7 @@ class FlaggableWikiPage extends WikiPage {
 
 		try {
 			$this->preparedUpdate = $page->getCurrentUpdate();
-		} catch ( PreconditionException | LogicException $ex ) {
+		} catch ( PreconditionException | LogicException ) {
 			// Ignore. getCurrentUpdate() will throw.
 		}
 	}
@@ -117,7 +113,6 @@ class FlaggableWikiPage extends WikiPage {
 		$this->revsArePending = null;
 		$this->pendingRevCount = null;
 		$this->pageConfig = null;
-		$this->syncedInTracking = null;
 		parent::clear(); // call super!
 	}
 
@@ -194,12 +189,8 @@ class FlaggableWikiPage extends WikiPage {
 			# cache expiry time (which is three weeks in Wikimedia production!).
 			$cache->makeKey( 'flaggedrevs-pending-count', $this->getLatest(), $sRevId ),
 			$wgParserCacheExpireTime,
-			function (
-				$oldValue = null, &$ttl = null, array &$setOpts = []
-			) use ( $srev, $fname ) {
+			function () use ( $srev, $fname ) {
 				$db = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
-				$setOpts += Database::getCacheSetOptions( $db );
-
 				return (int)$db->newSelectQueryBuilder()
 					->select( 'COUNT(*)' )
 					->from( 'revision' )
@@ -358,58 +349,6 @@ class FlaggableWikiPage extends WikiPage {
 	}
 
 	/**
-	 * Get the fp_reviewed value for this page
-	 * @return bool
-	 */
-	public function syncedInTracking() {
-		if ( !$this->mDataLoaded ) {
-			$this->loadPageData();
-		}
-		return $this->syncedInTracking;
-	}
-
-	/**
-	 * Get the newest of the highest rated flagged revisions of this page
-	 * Note: will not return deleted revisions
-	 * @return int
-	 */
-	public function getBestFlaggedRevId() {
-		$dbr = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
-
-		# Get the highest quality revision (not necessarily this one).
-		$oldid = $dbr->newSelectQueryBuilder()
-			->select( 'fr_rev_id' )
-			->from( 'flaggedrevs' )
-			->join( 'revision', null, 'rev_id = fr_rev_id' )
-			->where( [
-				'fr_page_id' => $this->getId(),
-				'rev_page = fr_page_id', // sanity
-				$dbr->bitAnd( 'rev_deleted', RevisionRecord::DELETED_TEXT ) . ' = 0'
-			] )
-			->orderBy( [ 'fr_rev_timestamp', 'fr_rev_id' ], SelectQueryBuilder::SORT_DESC )
-			->caller( __METHOD__ )
-			->fetchField();
-		return (int)$oldid;
-	}
-
-	/**
-	 * Updates the fp_reviewed field for this article
-	 */
-	public function lazyUpdateSyncStatus() {
-		$services = MediaWikiServices::getInstance();
-		if ( $services->getReadOnlyMode()->isReadOnly() ) {
-			return;
-		}
-
-		$services->getJobQueueGroup()->push(
-			new FRExtraCacheUpdateJob(
-				$this->getTitle(),
-				[ 'type' => 'updatesyncstate' ]
-			)
-		);
-	}
-
-	/**
 	 * Fetch a page record with the given conditions
 	 * @param IReadableDatabase $dbr
 	 * @param array $conditions
@@ -463,7 +402,6 @@ class FlaggableWikiPage extends WikiPage {
 		$this->revsArePending = false; // false => "found nothing" or "none pending"
 		$this->pendingRevCount = null; // defer this one...
 		$this->pageConfig = FRPageConfig::getDefaultVisibilitySettings(); // default
-		$this->syncedInTracking = true; // false => "unreviewed" or "synced"
 
 		# Fetch data from DB as needed...
 		$from = WikiPage::convertSelectType( $data );
@@ -485,7 +423,6 @@ class FlaggableWikiPage extends WikiPage {
 			if ( $data->fp_stable !== null ) { // stable rev found
 				$this->stable = (int)$data->fp_stable;
 				$this->revsArePending = ( $data->fp_pending_since !== null ); // revs await review
-				$this->syncedInTracking = (bool)$data->fp_reviewed;
 			}
 		}
 	}

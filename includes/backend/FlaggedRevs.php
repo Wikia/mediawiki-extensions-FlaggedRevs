@@ -2,10 +2,13 @@
 
 use MediaWiki\Config\ConfigException;
 use MediaWiki\Deferred\DeferredUpdates;
+use MediaWiki\Extension\FlaggedRevs\Backend\FlaggedRevsParserCacheFactory;
 use MediaWiki\JobQueue\Jobs\HTMLCacheUpdateJob;
 use MediaWiki\MediaWikiServices;
 use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\PageRecord;
 use MediaWiki\Page\PageReference;
+use MediaWiki\Page\ParserOutputAccess;
 use MediaWiki\Page\WikiPage;
 use MediaWiki\Parser\Parser;
 use MediaWiki\Parser\ParserOptions;
@@ -13,7 +16,6 @@ use MediaWiki\Parser\ParserOutput;
 use MediaWiki\PoolCounter\PoolCounterWorkViaCallback;
 use MediaWiki\Revision\RenderedRevision;
 use MediaWiki\Revision\RevisionRecord;
-use MediaWiki\Revision\SlotRecord;
 use MediaWiki\Status\Status;
 use MediaWiki\Title\Title;
 use MediaWiki\User\User;
@@ -26,18 +28,6 @@ use Wikimedia\Rdbms\IDBAccessObject;
  * Class is lazily-initialized, calling load() as needed
  */
 class FlaggedRevs {
-	/**
-	 * The name of the ParserCache to use for stable revisions caching.
-	 *
-	 * @note This name is used as a part of the ParserCache key, so
-	 * changing it will invalidate the parser cache for stable revisions.
-	 *
-	 * TODO: Extract constant to FlaggedRevsParserCache
-	 *
-	 * @deprecated 1.39
-	 */
-	public const PARSER_CACHE_NAME = 'stable-pcache';
-	public const PARSOID_PARSER_CACHE_NAME = 'stable-parsoid-pcache';
 
 	# ################ Basic config accessors #################
 
@@ -85,19 +75,6 @@ class FlaggedRevs {
 	 */
 	public static function autoReviewEnabled() {
 		return self::autoReviewEdits() || self::autoReviewNewPages();
-	}
-
-	/**
-	 * Get the maximum level that can be autoreviewed
-	 * @return int
-	 */
-	private static function maxAutoReviewLevel() {
-		global $wgFlaggedRevsTagsAuto;
-		if ( !self::autoReviewEnabled() ) {
-			return 0; // shouldn't happen
-		}
-		// B/C (before $wgFlaggedRevsTagsAuto)
-		return (int)( $wgFlaggedRevsTagsAuto[self::getTagName()] ?? 1 );
 	}
 
 	/**
@@ -261,42 +238,51 @@ class FlaggedRevs {
 	# ################ Parsing functions #################
 
 	/**
-	 * @param ParserOptions $pOpts
-	 * @return FlaggedRevsParserCache
-	 */
-	public static function getParserCacheInstance( ParserOptions $pOpts ): FlaggedRevsParserCache {
-		$cacheName = $pOpts->getUseParsoid() ? 'FlaggedRevsParsoidParserCache' : 'FlaggedRevsParserCache';
-		/** @var FlaggedRevsParserCache $cache */
-		$cache = MediaWikiServices::getInstance()->getService( $cacheName );
-		return $cache;
-	}
-
-	/**
-	 * Get the HTML output of a revision, using PoolCounter in the process
+	 * Get the HTML output of a revision, using PoolCounter in the process.
+	 * The result will be written back to the stable parser cache.
 	 *
-	 * @param FlaggedRevision $frev
-	 * @param ParserOptions $pOpts
-	 * @return Status Fatal if the pool is full. Otherwise good with an optional ParserOutput, or
-	 *  null if the revision is missing.
+	 * @return Status<?ParserOutput> Fatal if the pool is full. Otherwise good with a ParserOutput.
 	 */
 	public static function parseStableRevisionPooled(
-		FlaggedRevision $frev, ParserOptions $pOpts
-	) {
+		FlaggedRevision $frev, ParserOptions $pOpts,
+	): Status {
 		$services = MediaWikiServices::getInstance();
+		$pipeline = $services->getDefaultOutputPipeline();
 		$page = $services->getWikiPageFactory()->newFromTitle( $frev->getTitle() );
-		$stableParserCache = self::getParserCacheInstance( $pOpts );
-		$keyPrefix = $stableParserCache->makeKey( $page, $pOpts );
+		$stableParserCache = $services->getService( FlaggedRevsParserCacheFactory::SERVICE_NAME )
+			->getParserCache( $pOpts );
+
+		$keyPrefix = $stableParserCache->makeParserOutputKey(
+			$page,
+			$pOpts,
+			$stableParserCache->getMetadata( $page )?->getUsedOptions()
+		);
 
 		$work = new PoolCounterWorkViaCallback(
 			'ArticleView', // use standard parse PoolCounter config
 			$keyPrefix . ':revid:' . $frev->getRevId(),
 			[
-				'doWork' => function () use ( $frev, $pOpts ) {
-					return Status::newGood( self::parseStableRevision( $frev, $pOpts ) );
+				'doWork' => function () use ( $frev, $page, $pOpts, $stableParserCache, $pipeline ) {
+					if ( $pOpts->getPostproc() ) {
+						$preParserOptions = $pOpts->clearPostproc();
+						// Don't attempt to re-enter PoolCounter for canonical
+						// parse; that leads to deadlocks.
+						$parserOutput = self::parseStableRevisionCached( $frev, $page, $preParserOptions );
+						$parserOutput = ParserOutputAccess::postprocessInPipeline(
+							$pipeline, $parserOutput, $pOpts, $page,
+							static fn ( $used ) => $stableParserCache
+								->makeParserOutputKey( $page, $pOpts, $used )
+						);
+					} else {
+						$parserOutput = self::parseStableRevision( $frev, $pOpts );
+					}
+					$stableParserCache->save( $parserOutput, $page, $pOpts );
+					return Status::newGood( $parserOutput );
 				},
 				'doCachedWork' => static function () use ( $page, $pOpts, $stableParserCache ) {
 					// Use new cache value from other thread
-					return Status::newGood( $stableParserCache->get( $page, $pOpts ) ?: null );
+					$parserOutput = $stableParserCache->get( $page, $pOpts );
+					return $parserOutput ? Status::newGood( $parserOutput ) : false;
 				},
 				'fallback' => static function () use ( $page, $pOpts, $stableParserCache ) {
 					// Use stale cache if possible
@@ -316,11 +302,8 @@ class FlaggedRevs {
 
 	/**
 	 * Get the HTML output of a revision.
-	 * @param FlaggedRevision $frev
-	 * @param ParserOptions $pOpts
-	 * @return ParserOutput|null
 	 */
-	public static function parseStableRevision( FlaggedRevision $frev, ParserOptions $pOpts ) {
+	public static function parseStableRevision( FlaggedRevision $frev, ParserOptions $pOpts ): ParserOutput {
 		# Notify Parser if includes should be stabilized
 		$resetManager = false;
 		$incManager = FRInclusionManager::singleton();
@@ -333,10 +316,6 @@ class FlaggedRevs {
 			}
 		}
 		# Parse the new body
-		$content = $frev->getRevisionRecord()->getContent( SlotRecord::MAIN );
-		if ( $content === null ) {
-			return null; // missing revision
-		}
 
 		// Make this parse use reviewed/stable versions of templates
 		$oldCurrentRevisionRecordCallback = $pOpts->setCurrentRevisionRecordCallback(
@@ -354,11 +333,6 @@ class FlaggedRevs {
 					return $oldCurrentRevisionRecordCallback( $title, $parser );
 				}
 				$id = false; // current version
-				# Check for the version of this template used when reviewed...
-				$maybeId = $incManager->getReviewedTemplateVersion( $title );
-				if ( $maybeId !== null ) {
-					$id = (int)$maybeId; // use if specified (even 0)
-				}
 				# Check for stable version of template if this feature is enabled...
 				if ( self::inclusionSetting() == FR_INCLUDES_STABLE ) {
 					$maybeId = $incManager->getStableTemplateVersion( $title );
@@ -381,15 +355,41 @@ class FlaggedRevs {
 				return $oldCurrentRevisionRecordCallback( $title, $parser );
 			}
 		);
-		$contentRenderer = MediaWikiServices::getInstance()->getContentRenderer();
-		$parserOut = $contentRenderer->getParserOutput(
-			$content, $frev->getTitle(), $frev->getRevisionRecord(), $pOpts );
+		// This should match ParserOutputAccess::renderRevision(), although
+		// the audience is FOR_PUBLIC which matches the check done in
+		// ParserOutputAccess::checkPreconditions().
+		$revisionRenderer = MediaWikiServices::getInstance()->getRevisionRenderer();
+		$renderedRev = $revisionRenderer->getRenderedRevision(
+			$frev->getRevisionRecord(), $pOpts, null, [
+				'audience' => RevisionRecord::FOR_PUBLIC,
+				// XXX should pass 'previous-output' here for selective update
+			] );
+		$parserOut = $renderedRev->getRevisionParserOutput();
 		# Stable parse done!
 		if ( $resetManager ) {
 			$incManager->clear(); // reset the FRInclusionManager as needed
 		}
 		$pOpts->setCurrentRevisionRecordCallback( $oldCurrentRevisionRecordCallback );
 		return $parserOut;
+	}
+
+	/**
+	 * Get the HTML output of a revision from the cache, recomputing it if
+	 * needed.
+	 */
+	private static function parseStableRevisionCached(
+		FlaggedRevision $frev, PageRecord $page, ParserOptions $pOpts,
+	): ParserOutput {
+		$services = MediaWikiServices::getInstance();
+		$stableParserCache = $services->getService(
+			FlaggedRevsParserCacheFactory::SERVICE_NAME
+		)->getParserCache( $pOpts );
+		$parserOutput = $stableParserCache->get( $page, $pOpts );
+		if ( !$parserOutput ) {
+			$parserOutput = self::parseStableRevision( $frev, $pOpts );
+			$stableParserCache->save( $parserOutput, $page, $pOpts );
+		}
+		return $parserOutput;
 	}
 
 	# ################ Tracking/cache update update functions #################
@@ -449,8 +449,6 @@ class FlaggedRevs {
 				);
 			}
 		}
-		# Lazily rebuild dependencies on next parse (we invalidate below)
-		self::clearStableOnlyDeps( $title->getArticleID() );
 		# Clear page cache unless this is hooked via RevisionDataUpdates, in
 		# which case these updates will happen already with tuned timestamps
 		if ( !$renderedRevision ) {
@@ -473,25 +471,6 @@ class FlaggedRevs {
 			->where( [ 'fp_page_id' => $pageId ] )
 			->caller( __METHOD__ )
 			->execute();
-		$dbw->newDeleteQueryBuilder()
-			->deleteFrom( 'flaggedrevs_tracking' )
-			->where( [ 'ftr_from' => $pageId ] )
-			->caller( __METHOD__ )
-			->execute();
-	}
-
-	/**
-	 * Clear tracking table of stable-only links for this page
-	 * @param int|int[] $pageId (int or array)
-	 */
-	public static function clearStableOnlyDeps( $pageId ) {
-		$dbw = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
-
-		$dbw->newDeleteQueryBuilder()
-			->deleteFrom( 'flaggedrevs_tracking' )
-			->where( [ 'ftr_from' => $pageId ] )
-			->caller( __METHOD__ )
-			->execute();
 	}
 
 	/**
@@ -501,7 +480,7 @@ class FlaggedRevs {
 	 */
 	public static function purgeMediaWikiHtmlCdn( Title $title ) {
 		DeferredUpdates::addCallableUpdate( static function () use ( $title ) {
-			$htmlCache = MediaWikiServices::getInstance()->getHtmlCacheUpdater();
+			$htmlCache = MediaWikiServices::getInstance()->getHTMLCacheUpdater();
 			$htmlCache->purgeTitleUrls( $title, $htmlCache::PURGE_INTENT_TXROUND_REFLECTED );
 		} );
 	}
@@ -515,16 +494,6 @@ class FlaggedRevs {
 		$jobs = [];
 		$jobs[] = HTMLCacheUpdateJob::newForBacklinks( $title, 'templatelinks' );
 		MediaWikiServices::getInstance()->getJobQueueGroup()->lazyPush( $jobs );
-
-		DeferredUpdates::addUpdate( new FRExtraCacheUpdate( $title ) );
-	}
-
-	/**
-	 * Invalidates/purges pages where only stable version includes this page.
-	 * @param Title $title
-	 */
-	public static function extraHTMLCacheUpdate( Title $title ) {
-		DeferredUpdates::addUpdate( new FRExtraCacheUpdate( $title ) );
 	}
 
 	# ################ Revision functions #################
@@ -586,9 +555,9 @@ class FlaggedRevs {
 			return [];
 		}
 		$tag = self::getTagName();
-		# Try to keep this tag val the same as the stable rev's
-		$val = $oldFlags[$tag] ?? 1;
-		$val = min( $val, self::maxAutoReviewLevel() );
+		# Try to keep this tag val the same as the stable rev's,
+		# but auto-review can never rate above the lowest level
+		$val = min( $oldFlags[$tag] ?? 1, 1 );
 		# Dial down the level to one the user has permission to set
 		while ( !self::userCanSetValue( $user, $val ) ) {
 			$val--;

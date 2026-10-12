@@ -36,15 +36,12 @@ use Wikimedia\ParamValidator\TypeDef\IntegerDef;
  * @ingroup FlaggedRevs
  */
 class ApiQueryOldreviewedpages extends ApiQueryGeneratorBase {
-	private UserIdentityUtils $userIdentityUtils;
-
 	public function __construct(
 		ApiQuery $query,
 		string $moduleName,
-		UserIdentityUtils $userIdentityUtils
+		private readonly UserIdentityUtils $userIdentityUtils,
 	) {
 		parent::__construct( $query, $moduleName, 'or' );
-		$this->userIdentityUtils = $userIdentityUtils;
 	}
 
 	/**
@@ -102,9 +99,13 @@ class ApiQueryOldreviewedpages extends ApiQueryGeneratorBase {
 			$this->addWhere( 'page_title = wl_title' );
 		}
 		if ( $params['category'] != '' ) {
-			$this->addTables( 'categorylinks' );
+			$this->addTables( [ 'categorylinks', 'linktarget' ] );
+			$this->addJoinConds( [
+				'linktarget' => [ 'JOIN', 'lt_id=cl_target_id' ]
+			] );
 			$this->addWhere( 'cl_from = fp_page_id' );
-			$this->addWhereFld( 'cl_to', $params['category'] );
+			$this->addWhereFld( 'lt_title', $params['category'] );
+			$this->addWhereFld( 'lt_namespace', NS_CATEGORY );
 		}
 
 		$this->addWhereRange(

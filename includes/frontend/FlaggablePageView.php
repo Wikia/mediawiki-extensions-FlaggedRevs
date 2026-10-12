@@ -1,17 +1,19 @@
 <?php
 
-use MediaWiki\Cache\CacheKeyHelper;
 use MediaWiki\Context\ContextSource;
 use MediaWiki\Context\RequestContext;
+use MediaWiki\Diff\DifferenceEngine;
 use MediaWiki\EditPage\EditPage;
-use MediaWiki\Exception\MWException;
+use MediaWiki\Extension\FlaggedRevs\Backend\FlaggedRevsParserCacheFactory;
 use MediaWiki\HookContainer\HookRunner;
 use MediaWiki\Html\Html;
 use MediaWiki\MediaWikiServices;
 use MediaWiki\Message\Message;
 use MediaWiki\Output\OutputPage;
 use MediaWiki\Page\Article;
+use MediaWiki\Page\CacheKeyHelper;
 use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\ParserOutputAccess;
 use MediaWiki\Parser\ParserOptions;
 use MediaWiki\Parser\ParserOutput;
 use MediaWiki\Request\WebRequest;
@@ -22,6 +24,7 @@ use MediaWiki\Title\Title;
 use MediaWiki\User\User;
 use MediaWiki\User\UserIdentity;
 use OOUI\ButtonInputWidget;
+use Wikimedia\ObjectCache\MapCacheLRU;
 use Wikimedia\Rdbms\IDBAccessObject;
 
 /**
@@ -50,6 +53,7 @@ class FlaggablePageView extends ContextSource {
 	 * The flagged revision being viewed.
 	 */
 	private ?FlaggedRevision $frev = null;
+	private FlaggedRevsParserCacheFactory $flaggedRevsParserCacheFactory;
 
 	/**
 	 * @return MapCacheLRU
@@ -103,6 +107,8 @@ class FlaggablePageView extends ContextSource {
 		}
 		$this->article = FlaggableWikiPage::getTitleInstance( $title );
 		$this->out = $this->getOutput(); // convenience
+		$this->flaggedRevsParserCacheFactory =
+			MediaWikiServices::getInstance()->getService( FlaggedRevsParserCacheFactory::SERVICE_NAME );
 	}
 
 	private function __clone() {
@@ -134,7 +140,7 @@ class FlaggablePageView extends ContextSource {
 			// Page is reviewable and has a stable version
 			$this->article->getStableRev() &&
 			// No parameters requesting a different version of the page
-			!$request->getCheck( 'oldid' ) && !$request->getCheck( 'stableid' )
+			!$request->getCheck( 'oldid' )
 		);
 		if ( !$canShowStable ) {
 			return false;
@@ -224,36 +230,6 @@ class FlaggablePageView extends ContextSource {
 	}
 
 	/**
-	 * Add a stable link when viewing old versions of an article that
-	 * have been reviewed. (e.g. for &oldid=x urls)
-	 */
-	public function addStableLink(): void {
-		$request = $this->getRequest();
-		if ( !$this->article->isReviewable() ||
-			!$request->getVal( 'oldid' ) ||
-			$this->out->isPrintable()
-		) {
-			return;
-		}
-
-		# We may have nav links like "direction=prev&oldid=x"
-		$revID = $this->getOldIDFromRequest();
-		$frev = FlaggedRevision::newFromTitle( $this->article->getTitle(), $revID );
-		if ( !$frev ) {
-			return;
-		}
-
-		# Give a notice if this rev ID corresponds to a reviewed version...
-		$time = $this->getLanguage()->date( $frev->getTimestamp(), true );
-		$message = $this->msg( 'revreview-basic-source', $frev->getRevId(), $time )->parse();
-		$html = FlaggedRevsHTML::addMessageBox( 'block', $message, [
-			'id' => 'mw-fr-revision-tag-old',
-			'class' => 'flaggedrevs_notice plainlinks noprint'
-		] );
-		$this->out->addHTML( $html );
-	}
-
-	/**
 	 * Adds a visual indicator to the page view based on the review status of the current page revision.
 	 *
 	 * This indicator helps users quickly identify whether the current revision is stable, a draft,
@@ -289,10 +265,8 @@ class FlaggablePageView extends ContextSource {
 				$iconClass = 'cdx-fr-css-icon-review--status--pending';
 				break;
 			case 'unreviewed':
-				if ( !$this->out->isPrintable() ) {
-					$statusMessageKey = $this->useSimpleUI() ? 'revreview-quick-none' : 'revreview-noflagged';
-					$iconClass = 'cdx-fr-css-icon-review--status--unchecked';
-				}
+				$statusMessageKey = $this->useSimpleUI() ? 'revreview-quick-none' : 'revreview-noflagged';
+				$iconClass = 'cdx-fr-css-icon-review--status--unchecked';
 				break;
 			case 'invalid':
 			case 'old':
@@ -303,14 +277,13 @@ class FlaggablePageView extends ContextSource {
 		if ( $statusMessageKey ) {
 			// Prepare the attributes for the indicator element
 			$attributes = [
-				'name' => 'fr-review-status',
 				'class' => 'mw-fr-review-status-indicator',
 				'id' => $indicatorId,
 			];
 
 			// Generate the HTML for the indicator
 			$indicatorHtml = Html::rawElement(
-				'indicator',
+				'div',
 				$attributes,
 				Html::element( 'span', [ 'class' => $iconClass ] ) . $this->msg( $statusMessageKey )->parse()
 			);
@@ -321,7 +294,11 @@ class FlaggablePageView extends ContextSource {
 	}
 
 	/**
-	 * Handles the display of the page content, prioritizing the last stable version if possible.
+	 * Determines what page content to display, prioritizing the most recent stable version if
+	 * $wgFlaggedRevsOverride is set to true.
+	 *
+	 * Handles regular page views (?action=view) only. Does not handle oldids or diffs. VisualEditor
+	 * publishes also trigger this behaviour.
 	 *
 	 * This method replaces the current page view with the last stable version if conditions allow.
 	 * It determines the type of revision requested by the user (e.g., 'stable', 'draft', 'unreviewed'),
@@ -352,19 +329,10 @@ class FlaggablePageView extends ContextSource {
 		$requestedRevision = $this->determineRequestedRevision();
 
 		switch ( $requestedRevision ) {
-			case 'invalid':
-				$this->out->addWikiMsg( 'revreview-invalid' );
-				$this->out->returnToMain( false, $this->article->getTitle() );
-				$outputDone = true;
-				$useParserCache = false;
-				return;
-
-			case 'old':
-				$outputDone = $this->showOldReviewedVersion( $this->frev, $tag );
-				$tagTypeClass = 'mw-fr-old-stable';
-				$useParserCache = false;
-				break;
-
+			// "Stable" means that a reviewed version of the page is being displayed. This can happen
+			// if the top revision has been marked reviewed, or if $wgFlaggedRevsOverride is set to
+			// true and a non-reviewer is viewing a page with unreviewed edits. In the latter case,
+			// the unreviewed edits will be hidden and replaced with the "stable", reviewed version.
 			case 'stable':
 				$outputDone = $this->showStableVersion( $this->srev, $tag );
 				$tagTypeClass = $this->article->stableVersionIsSynced() ? 'mw-fr-stable-synced' :
@@ -372,12 +340,18 @@ class FlaggablePageView extends ContextSource {
 				$useParserCache = false;
 				break;
 
+			// "Draft" means that a reviewer is viewing a page with some unreviewed edits. Unreviewed
+			// edits are being displayed. If $wgFlaggedRevsOverride is set to true, unreviewed edits
+			// are only displayed to reviewers.
 			case 'draft':
 				$this->showDraftVersion( $this->srev, $tag );
 				$tagTypeClass = $this->article->stableVersionIsSynced() ? 'mw-fr-draft-synced' :
 					'mw-fr-draft-not-synced';
 				break;
 
+			// A new article that has never been reviewed. No revisions will be hidden regardless of
+			// settings. We don't have a "stable", reviewed revision yet, so we have to show an
+			// unreviewed revision.
 			case 'unreviewed':
 			default:
 				$outputDone = $this->showUnreviewedVersion( $tag );
@@ -415,37 +389,19 @@ class FlaggablePageView extends ContextSource {
 	/**
 	 * Determines the type of revision requested based on the current request.
 	 *
-	 * This method examines the request parameters to identify whether the user has requested a specific
-	 * revision (e.g., via 'stableid'). It determines whether to show a stable, old reviewed, draft,
-	 * or unreviewed version of the page. If no specific revision is requested, it falls back on the
-	 * user's preferences and site configuration to decide which version to show.
+	 * This method determines whether to show a stable, old reviewed, draft, or unreviewed version of
+	 * the page. If no specific revision is requested, it falls back on the user's preferences and
+	 * site configuration to decide which version to show.
 	 *
 	 * The method updates the stable and flagged revision properties (`$srev` and `$frev`) accordingly.
 	 *
 	 * @return string The type of revision requested: 'invalid', 'old', 'stable', 'draft', or 'unreviewed'.
 	 */
 	private function determineRequestedRevision(): string {
-		$request = $this->getRequest();
 		$this->srev = $this->article->getStableRev();
 		$this->frev = $this->srev;
-		$stableId = $this->srev ? $this->srev->getRevId() : 0;
 
-		$reqId = $request->getVal( 'stableid' );
-		if ( $reqId === "best" ) {
-			$reqId = $this->article->getBestFlaggedRevId();
-		}
-		if ( $reqId ) {
-			if ( !$stableId ) {
-				return 'invalid'; // Invalid ID
-			} elseif ( $stableId == $reqId ) {
-				return 'stable'; // Stable version requested
-			} else {
-				$this->frev = FlaggedRevision::newFromTitle( $this->article->getTitle(), $reqId );
-				return $this->frev ? 'old' : 'invalid'; // Old reviewed version requested, or invalid ID
-			}
-		}
-
-		// If no specific revision is requested, determine whether to show the draft or unreviewed version
+		// Determine whether to show the draft or unreviewed version
 		if ( $this->frev ) {
 			if ( $this->showingStable() || $this->article->stableVersionIsSynced() ) {
 				return 'stable';
@@ -460,15 +416,12 @@ class FlaggablePageView extends ContextSource {
 	 * If the page has a stable version and it shows by default,
 	 * tell search crawlers to index only that version of the page.
 	 * Also index the draft as well if they are synced (bug 27173).
-	 * However, any URL with ?stableid=x should not be indexed (as with ?oldid=x).
 	 */
 	public function setRobotPolicy(): void {
-		$request = $this->getRequest();
 		if ( $this->article->getStableRev() && $this->article->isStableShownByDefault() ) {
 			if ( $this->isPageView() && $this->showingStable() ) {
 				return; // stable version - index this
-			} elseif ( !$request->getVal( 'stableid' )
-				&& $this->out->getRevisionId() == $this->article->getStable()
+			} elseif ( $this->out->getRevisionId() == $this->article->getStable()
 				&& $this->article->stableVersionIsSynced()
 			) {
 				return; // draft that is synced with the stable version - index this
@@ -514,9 +467,6 @@ class FlaggablePageView extends ContextSource {
 	private function showDraftVersion( FlaggedRevision $srev, string &$tag ): void {
 		$request = $this->getRequest();
 		$reqUser = $this->getUser();
-		if ( $this->out->isPrintable() ) {
-			return; // all this function does is add notices; don't show them
-		}
 		$time = $this->getLanguage()->date( $srev->getTimestamp(), true );
 		# Get stable version sync status
 		$synced = $this->article->stableVersionIsSynced();
@@ -571,7 +521,14 @@ class FlaggablePageView extends ContextSource {
 			// Simple icon-based UI
 			if ( $this->useSimpleUI() ) {
 				$revisionId = $srev->getRevId();
-				$tag .= FlaggedRevsHTML::reviewDialog( $srev, $revisionId, $revsSince, 'draft', $synced );
+				$tag .= FlaggedRevsHTML::reviewDialog(
+					$this,
+					$srev,
+					$revisionId,
+					$revsSince,
+					'draft',
+					$synced,
+				);
 			// Standard UI
 			} else {
 				if ( $synced ) {
@@ -584,64 +541,6 @@ class FlaggablePageView extends ContextSource {
 				$tag .= $msgHTML . $diffToggle;
 			}
 		}
-	}
-
-	/**
-	 * Displays an old reviewed version of a page.
-	 *
-	 * This method outputs an older reviewed version of the page. It sets the revision ID for display
-	 * and generates the appropriate tags and notices, including handling the case where the page has
-	 * pending revisions. It creates a `ParserOutput` for this version and adds it to the output page.
-	 *
-	 * The method is primarily used when viewing a specific old version of a page.
-	 *
-	 * @param FlaggedRevision $frev The selected flagged revision.
-	 * @param string &$tag Reference to the variable holding the review box/bar info.
-	 *
-	 * @return ?ParserOutput The generated ParserOutput for the old reviewed version, or null if generation fails.
-	 */
-	private function showOldReviewedVersion( FlaggedRevision $frev, string &$tag ): ?ParserOutput {
-		$reqUser = $this->getUser();
-		$time = $this->getLanguage()->date( $frev->getTimestamp(), true );
-		# Set display revision ID
-		$this->out->setRevisionId( $frev->getRevId() );
-
-		# Construct some tagging for non-printable outputs. Note that the pending
-		# notice has all this info already, so don't do this if we added that already.
-		if ( !$this->out->isPrintable() ) {
-			// Simple icon-based UI
-			if ( $this->useSimpleUI() ) {
-				# For protection based configs, show lock only if it's not redundant.
-				$revsSince = $this->article->getPendingRevCount();
-				$srev = $this->article->getStableRev();
-				$revisionId = $srev->getRevId();
-				$tag = FlaggedRevsHTML::reviewDialog( $frev, $revisionId, $revsSince );
-				// Standard UI
-			} else {
-				$msg = 'revreview-basic-old';
-				$tag = $this->msg( $msg, $frev->getRevId(), $time )->parse();
-			}
-		}
-
-		# Generate the uncached parser output for this old reviewed version
-		$parserOptions = $this->makeParserOptions( $reqUser );
-		$parserOut = FlaggedRevs::parseStableRevision( $frev, $parserOptions );
-		if ( !$parserOut ) {
-			return null;
-		}
-
-		# Add the parser output to the page view
-		$this->out->addParserOutput(
-			$parserOut,
-			$parserOptions,
-			[
-				'enableSectionEditLinks' => false,
-				// (T391788) This should always be used for full page views
-				'includeDebugInfo' => true,
-			]
-		);
-
-		return $parserOut;
 	}
 
 	/**
@@ -667,7 +566,6 @@ class FlaggablePageView extends ContextSource {
 		$synced = $this->article->stableVersionIsSynced();
 		# Construct some tagging
 		if (
-			!$this->out->isPrintable() &&
 			!( $this->article->lowProfileUI() && $synced )
 		) {
 			$revsSince = $this->article->getPendingRevCount();
@@ -676,11 +574,12 @@ class FlaggablePageView extends ContextSource {
 				# For protection based configs, show lock only if it's not redundant.
 				$revisionId = $srev->getRevId();
 				$tag = FlaggedRevsHTML::reviewDialog(
+					$this,
 					$srev,
 					$revisionId,
 					$revsSince,
 					'stable',
-					$synced
+					$synced,
 				);
 			// Standard UI
 			} else {
@@ -696,15 +595,49 @@ class FlaggablePageView extends ContextSource {
 
 		// TODO: Rewrite to use ParserOutputAccess
 		$parserOptions = $this->makeParserOptions( $reqUser );
-		$stableParserCache = FlaggedRevs::getParserCacheInstance( $parserOptions );
-		// Check the stable version cache for the parser output
-		$parserOut = $stableParserCache->get( $this->article, $parserOptions );
 
+		// Check the stable version cache for the parser output
+		$skin = $this->out->getSkin();
+		$poOptions = [
+			// (T391788) This should always be used for full page views
+			'includeDebugInfo' => true,
+			'skin' => $skin,
+			'injectTOC' => $skin->getOptions()['toc'],
+		];
+		// Copy these to the parser options as well
+		$parserOptions->setOption( 'includeDebugInfo', true );
+		$parserOptions->setOption( 'skin', $skin );
+		$parserOptions->setOption( 'injectTOC', $skin->getOptions()['toc'] );
+
+		// TODO when refactoring this to get rid of $poOptions, check on the discrepancy between $pm->quickUserCan and
+		// $authority->probablyCan in Article::view, as well as check whether the behaviour of these need to be aligned
+		// (additional deprecation warning box), and if so move that aligned behaviour to core
+		$pm = MediaWikiServices::getInstance()->getPermissionManager();
+		if (
+			!$pm->quickUserCan( 'edit', $reqUser, $this->article->getTitle() )
+		) {
+			$poOptions['enableSectionEditLinks'] = false;
+			$parserOptions->setOption( 'enableSectionEditLinks', false );
+		}
+
+		$parserOptions->enablePostproc();
+		$stableParserCache = $this->flaggedRevsParserCacheFactory->getParserCache( $parserOptions );
+
+		$parserOut = $stableParserCache->get( $this->article, $parserOptions );
 		if ( !$parserOut ) {
 			if ( FlaggedRevs::inclusionSetting() == FR_INCLUDES_CURRENT && $synced ) {
 				# Stable and draft version are identical; check the draft version cache
-				$draftParserCache = MediaWikiServices::getInstance()->getParserCache();
-				$parserOut = $draftParserCache->get( $this->article, $parserOptions );
+				$draftParserOutputAccess = MediaWikiServices::getInstance()->getParserOutputAccess();
+				$draftStatus = $draftParserOutputAccess->getParserOutput(
+					$this->article, $parserOptions, $srev->getRevisionRecord(),
+					[
+						ParserOutputAccess::OPT_NO_AUDIENCE_CHECK => true,
+						ParserOutputAccess::OPT_POOL_COUNTER =>
+							ParserOutputAccess::POOL_COUNTER_ARTICLE_VIEW,
+						ParserOutputAccess::OPT_POOL_COUNTER_FALLBACK => true
+					],
+				);
+				$parserOut = $draftStatus->isOK() ? $draftStatus->getValue() : null;
 			}
 
 			if ( !$parserOut ) {
@@ -713,26 +646,16 @@ class FlaggablePageView extends ContextSource {
 				if ( !$status->isGood() ) {
 					$this->out->disableClientCache();
 					$this->out->setRobotPolicy( 'noindex,nofollow' );
-					$statusFormatter = MediaWikiServices::getInstance()->getFormatterFactory()->getStatusFormatter(
-						$this->getContext() );
+					$statusFormatter = MediaWikiServices::getInstance()
+						->getFormatterFactory()
+						->getStatusFormatter( $this->getContext() );
 					$errorText = $statusFormatter->getMessage( $status );
 					$this->out->addHTML(
-						Html::errorBox( $this->out->parseAsContent( $errorText ) )
+						Html::errorBox( $this->out->parseAsContent( $errorText->text() ) )
 					);
 					return null;
 				}
 				$parserOut = $status->getValue();
-			}
-
-			if ( $parserOut instanceof ParserOutput ) {
-				# Update the stable version cache
-				$stableParserCache->save( $parserOut, $this->article, $parserOptions );
-
-				# Enqueue a job to update the "stable version only" dependencies
-				if ( !MediaWikiServices::getInstance()->getReadOnlyMode()->isReadOnly() ) {
-					$update = new FRDependencyUpdate( $this->article->getTitle(), $parserOut );
-					$update->doUpdate( FRDependencyUpdate::DEFERRED );
-				}
 			}
 		}
 
@@ -749,37 +672,20 @@ class FlaggablePageView extends ContextSource {
 		}
 
 		# Add the parser output to the page view
-		$pm = MediaWikiServices::getInstance()->getPermissionManager();
-		$poOptions = [
-			// (T391788) This should always be used for full page views
-			'includeDebugInfo' => true,
-		];
-		if ( $this->out->isPrintable() ||
-			!$pm->quickUserCan( 'edit', $reqUser, $this->article->getTitle() )
-		) {
-			$poOptions['enableSectionEditLinks'] = false;
-		}
-
-		$this->out->addParserOutput( $parserOut, $parserOptions, $poOptions );
-
-		# Update page sync status for tracking purposes.
-		# NOTE: avoids primary hits and doesn't have to be perfect for what it does
-		if ( $this->article->syncedInTracking() != $synced ) {
-			$this->article->lazyUpdateSyncStatus();
-		}
-
+		$this->out->addPostProcessedParserOutput( $parserOut );
 		return $parserOut;
 	}
 
 	/**
-	 * Displays an unreviewed version of a page.
+	 * Displays a page with no reviewed revisions. Will display the most recent revision.
 	 *
 	 * This method handles the display of an unreviewed version of the page, showing the appropriate
 	 * UI elements based on user preferences (simple or detailed). It sets the appropriate tag and
 	 * tag type class to indicate the page's unreviewed status. The method generates a `ParserOutput`
 	 * for the unreviewed version and adds it to the output page.
 	 *
-	 * The method is used when there is no stable version or when a draft needs to be displayed.
+	 * The method is used when a page has no reviewed revisions in its history. In other words, it
+	 * is used for newly created pages by non-reviewers.
 	 *
 	 * @param string &$tag Reference to the variable holding the review box/bar info.
 	 *
@@ -790,7 +696,7 @@ class FlaggablePageView extends ContextSource {
 
 		if ( $this->useSimpleUI() ) {
 			$this->addStatusIndicator();
-			$this->out->addHTML( FlaggedRevsHTML::reviewDialog( null, 0, 0, 'unreviewed' ) );
+			$tag = FlaggedRevsHTML::reviewDialog( $this, null, 0, 0, 'unreviewed' );
 		} else {
 			$tag = $this->msg( 'revreview-noflagged' )->parse();
 		}
@@ -798,6 +704,15 @@ class FlaggablePageView extends ContextSource {
 		// Generate the ParserOutput for the unreviewed version
 		$parserOptions = $this->makeParserOptions( $reqUser );
 		$parserOut = $this->article->getParserOutput( $parserOptions );
+
+		// Set the output revision ID so that the "Permanent link" link works. T384778
+		// (T394381) Note that there is a tiny delay between publishing in VisualEditor
+		// and a Revision ID being available, which affects the page reload right after
+		// VisualEditor saves an edit; if so, skip.
+		$rev = $this->article->getRevisionRecord();
+		if ( $rev ) {
+			$this->out->setRevisionId( $rev->getId() );
+		}
 
 		// Add the ParserOutput to the output page
 		if ( $parserOut ) {
@@ -852,7 +767,7 @@ class FlaggablePageView extends ContextSource {
 							$limit
 						);
 					$nUsers = count( $users );
-				} catch ( InvalidArgumentException $e ) {
+				} catch ( InvalidArgumentException ) {
 					$nUsers = 0;
 				}
 				$multiNotice = DifferenceEngine::intermediateEditsMsg( $nEdits, $nUsers, $limit );
@@ -893,9 +808,7 @@ class FlaggablePageView extends ContextSource {
 		if ( !$this->article->isReviewable() ) {
 			return;
 		}
-		// HACK fake EditPage
-		$editPage = new EditPage( new Article( $title, $oldid ) );
-		$editPage->oldid = $oldid;
+		$article = new Article( $title, $oldid );
 		$reqUser = $this->getUser();
 
 		$lines = [];
@@ -903,7 +816,7 @@ class FlaggablePageView extends ContextSource {
 		$log = $this->stabilityLogNotice();
 		if ( $log ) {
 			$lines[] = $log;
-		} elseif ( $this->editWillRequireReview( $editPage ) ) {
+		} elseif ( $this->editWillRequireReview( $article, false ) ) {
 			$lines[] = $this->msg( 'revreview-editnotice' )->parseAsBlock();
 		}
 		$frev = $this->article->getStableRev();
@@ -1006,11 +919,6 @@ class FlaggablePageView extends ContextSource {
 	 * @param string|OutputPage &$output
 	 */
 	public function addReviewForm( &$output ): void {
-		if ( $this->out->isPrintable() ) {
-			// Must be on non-printable output
-			return;
-		}
-
 		# User must have review rights
 		$reqUser = $this->getUser();
 		if ( !MediaWikiServices::getInstance()->getPermissionManager()
@@ -1095,7 +1003,6 @@ class FlaggablePageView extends ContextSource {
 	 * SkinTemplateTabs, to include flagged revs UI elements
 	 *
 	 * @param array &$actions
-	 * @throws MWException
 	 */
 	public function setActionTabs( array &$actions ): void {
 		$reqUser = $this->getUser();
@@ -1287,11 +1194,8 @@ class FlaggablePageView extends ContextSource {
 		$pm = MediaWikiServices::getInstance()->getPermissionManager();
 		$request = $this->getRequest();
 		$reqUser = $this->getUser();
-		# Exempt printer-friendly output
-		if ( $this->out->isPrintable() ) {
-			return;
 		# Multi-page diffs are useless and misbehave (bug 19327). Sanity check $newRevRecord.
-		} elseif ( $this->isMultiPageDiff || !$newRevRecord ) {
+		if ( $this->isMultiPageDiff || !$newRevRecord ) {
 			return;
 		# Page must be reviewable.
 		} elseif ( !$this->article->isReviewable() ) {
@@ -1601,7 +1505,7 @@ class FlaggablePageView extends ContextSource {
 	 * @param ButtonInputWidget[] $buttons
 	 */
 	public function changeSaveButton( EditPage $editPage, array $buttons ): void {
-		if ( !$this->editWillRequireReview( $editPage ) ) {
+		if ( !$this->editWillRequireReview( $editPage->getArticle(), $editPage->isConflict ) ) {
 			// Edit will go live or be reviewed on save
 			return;
 		}
@@ -1616,10 +1520,10 @@ class FlaggablePageView extends ContextSource {
 	/**
 	 * If this edit will not go live on submit (accounting for wpReviewEdit)
 	 */
-	private function editWillRequireReview( EditPage $editPage ): bool {
+	private function editWillRequireReview( Article $article, bool $isConflict ): bool {
 		$request = $this->getRequest(); // convenience
 		$title = $this->article->getTitle(); // convenience
-		if ( !$this->article->editsRequireReview() || $this->editWillBeAutoreviewed( $editPage ) ) {
+		if ( !$this->article->editsRequireReview() || $this->editWillBeAutoreviewed( $article, $isConflict ) ) {
 			return false; // edit will go live immediately
 		} elseif ( $request->getCheck( 'wpReviewEdit' ) &&
 			MediaWikiServices::getInstance()->getPermissionManager()
@@ -1634,7 +1538,7 @@ class FlaggablePageView extends ContextSource {
 	 * If this edit will be auto-reviewed on submit
 	 * Note: checking wpReviewEdit does not count as auto-reviewed
 	 */
-	private function editWillBeAutoreviewed( EditPage $editPage ): bool {
+	private function editWillBeAutoreviewed( Article $article, bool $isConflict ): bool {
 		$title = $this->article->getTitle(); // convenience
 		if ( !$this->article->isReviewable() ) {
 			return false;
@@ -1646,8 +1550,8 @@ class FlaggablePageView extends ContextSource {
 				return true; // edit will be autoreviewed
 			}
 
-			$baseRevId = self::getBaseRevId( $editPage, $this->getRequest() );
-			$baseRevId2 = self::getAltBaseRevId( $editPage, $this->getRequest() );
+			$baseRevId = self::getBaseRevId( $article, $isConflict, $this->getRequest() );
+			$baseRevId2 = self::getAltBaseRevId( $article, $isConflict, $this->getRequest() );
 			$baseFRev = FlaggedRevision::newFromTitle( $title, $baseRevId );
 			if ( !$baseFRev && $baseRevId2 ) {
 				$baseFRev = FlaggedRevision::newFromTitle( $title, $baseRevId2 );
@@ -1674,11 +1578,12 @@ class FlaggablePageView extends ContextSource {
 		) {
 			// Not needed
 			return;
-		} elseif ( $this->editWillBeAutoreviewed( $editPage ) ) {
+		} elseif ( $this->editWillBeAutoreviewed( $editPage->getArticle(), $editPage->isConflict ) ) {
 			// Edit will be auto-reviewed
 			return;
 		}
-		if ( self::getBaseRevId( $editPage, $request ) == $this->article->getLatest() ) {
+		if ( self::getBaseRevId( $editPage->getArticle(), $editPage->isConflict, $request ) ==
+			$this->article->getLatest() ) {
 			# For pages with either no stable version, or an outdated one, let
 			# the user decide if he/she wants it reviewed on the spot. One might
 			# do this if he/she just saw the diff-to-stable and *then* decided to edit.
@@ -1714,12 +1619,11 @@ class FlaggablePageView extends ContextSource {
 	/**
 	 * Guess the rev ID the text of this form is based off
 	 */
-	private static function getBaseRevId( EditPage $editPage, WebRequest $request ): int {
-		if ( $editPage->isConflict ) {
+	private static function getBaseRevId( Article $article, bool $isConflict, WebRequest $request ): int {
+		if ( $isConflict ) {
 			return 0; // throw away these values (bug 33481)
 		}
 
-		$article = $editPage->getArticle(); // convenience
 		$latestId = $article->getPage()->getLatest(); // current rev
 		# Undoing edits...
 		if ( $request->getIntOrNull( 'wpUndidRevision' ) ?? $request->getIntOrNull( 'undo' ) ) {
@@ -1738,12 +1642,11 @@ class FlaggablePageView extends ContextSource {
 	 * When undoing the top X edits, the base can be though of as either
 	 * the current or the edit X edits prior to the latest.
 	 */
-	private static function getAltBaseRevId( EditPage $editPage, WebRequest $request ): int {
-		if ( $editPage->isConflict ) {
+	private static function getAltBaseRevId( Article $article, bool $isConflict, WebRequest $request ): int {
+		if ( $isConflict ) {
 			return 0; // throw away these values (bug 33481)
 		}
 
-		$article = $editPage->getArticle(); // convenience
 		$latestId = $article->getPage()->getLatest(); // current rev
 		$undo = $request->getIntOrNull( 'wpUndidRevision' ) ?? $request->getIntOrNull( 'undo' );
 		# Undoing consecutive top edits...
@@ -1755,7 +1658,7 @@ class FlaggablePageView extends ContextSource {
 			$revision = $revisionLookup->getRevisionById( $latestId );
 			$previousRevision = $revision ? $revisionLookup->getPreviousRevision( $revision ) : null;
 			$altBaseRevId = $request->getInt( 'wpUndoAfter', $request->getInt( 'undoafter',
-				$previousRevision ? $previousRevision->getId() : null
+				$previousRevision ? $previousRevision->getId() : 0
 			) );
 		} else {
 			$altBaseRevId = 0;

@@ -102,23 +102,26 @@ class PendingChangesPager extends TablePager {
 			'quality' => 'fp_quality',
 			'pending_since' => 'fp_pending_since'
 		];
-		$conds = [
-			'page_id = fp_page_id',
-			'rev_id = fp_stable',
-			$this->mDb->expr( 'fp_pending_since', '!=', null )
+		$conds = [ $this->mDb->expr( 'fp_pending_since', '!=', null ) ];
+		$joinConds = [
+			'page' => [ 'JOIN', 'page_id=fp_page_id' ],
+			'revision' => [ 'JOIN', 'rev_id=fp_stable' ],
 		];
 
 		# Filter by pages configured to be stable
 		if ( $this->stable ) {
 			$tables[] = 'flaggedpage_config';
-			$conds[] = 'fp_page_id = fpc_page_id';
+			$joinConds['flaggedpage_config'] = [ 'JOIN', 'fpc_page_id=fp_page_id' ];
 			$conds['fpc_override'] = 1;
 		}
 		# Filter by category
 		if ( $this->category != '' ) {
 			$tables[] = 'categorylinks';
-			$conds[] = 'cl_from = fp_page_id';
-			$conds['cl_to'] = $this->category;
+			$tables[] = 'linktarget';
+			$joinConds['categorylinks'] = [ 'JOIN', 'cl_from=fp_page_id' ];
+			$joinConds['linktarget'] = [ 'JOIN', 'lt_id=cl_target_id' ];
+			$conds['lt_title'] = $this->category;
+			$conds['lt_namespace'] = NS_CATEGORY;
 		}
 		# Index field for sorting
 		$this->mIndexField = 'fp_pending_since';
@@ -133,8 +136,10 @@ class PendingChangesPager extends TablePager {
 			if ( $uid ) {
 				$tables[] = 'watchlist';
 				$conds['wl_user'] = $uid;
-				$conds[] = 'page_namespace = wl_namespace';
-				$conds[] = 'page_title = wl_title';
+				$joinConds['watchlist'] = [ 'JOIN', [
+					'wl_namespace=page_namespace',
+					'wl_title=page_title'
+				] ];
 			}
 		}
 		# Filter by bytes changed
@@ -145,16 +150,21 @@ class PendingChangesPager extends TablePager {
 		}
 		# Filter by tag
 		if ( $this->tagFilter !== null && $this->tagFilter !== '' ) {
-			$tables[] = 'change_tag';
-			$tables[] = 'change_tag_def';
-			$conds[] = 'ct_tag_id = ctd_id';
-			$conds[] = 'ct_rev_id = rev_id';
-			$conds['ctd_name'] = $this->tagFilter;
+			$changeTagsStore = MediaWikiServices::getInstance()->getChangeTagsStore();
+			if ( !$changeTagsStore->canViewTag( $this->tagFilter, $this->getAuthority() ) ) {
+				$conds[] = '1=0';
+			} else {
+				$tables[] = 'change_tag';
+				$tables[] = 'change_tag_def';
+				$joinConds['change_tag'] = [ 'JOIN', 'ct_rev_id=rev_id' ];
+				$joinConds['change_tag_def'] = [ 'JOIN', 'ct_tag_id=ctd_id' ];
+				$conds['ctd_name'] = $this->tagFilter;
+			}
 		}
 		# Don't display pages with expired protection (T350527)
 		if ( FlaggedRevs::useOnlyIfProtected() ) {
 			$tables[] = 'flaggedpage_config';
-			$conds[] = 'fpc_page_id = fp_page_id';
+			$joinConds['flaggedpage_config'] = [ 'JOIN', 'fpc_page_id=fp_page_id' ];
 			$conds[] = new RawSQLExpression( $this->mDb->buildComparison( '>',
 					[ 'fpc_expiry' => $this->mDb->timestamp() ] ) . ' OR fpc_expiry = "infinity"'
 			);
@@ -169,6 +179,7 @@ class PendingChangesPager extends TablePager {
 			'fields' => $fields,
 			'conds' => $conds,
 			'options' => $options,
+			'join_conds' => $joinConds,
 		];
 	}
 
@@ -273,7 +284,7 @@ class PendingChangesPager extends TablePager {
 		return Html::rawElement(
 			'div',
 			[ 'class' => 'cdx-table__header__caption', 'aria-hidden' => 'true' ],
-			$this->msg( 'pendingchanges-table-caption' )->text()
+			$this->msg( 'pendingchanges-table-caption' )->escaped()
 		);
 	}
 
@@ -283,9 +294,14 @@ class PendingChangesPager extends TablePager {
 	 * @return int The count of pending pages.
 	 */
 	private function getPendingCount(): int {
-		return $this->mDb->selectRowCount(
-			'flaggedpages', '*', [ $this->mDb->expr( 'fp_pending_since', '!=', null ) ], __METHOD__
-		);
+		return $this->mDb->newSelectQueryBuilder()
+			->select( '*' )
+			->from( 'flaggedpages' )
+			->join( 'page', null, 'fp_page_id = page_id' )
+			->where( $this->mDb->expr( 'fp_pending_since', '!=', null ) )
+			->andWhere( [ 'page_namespace' => FlaggedRevs::getReviewNamespaces() ] )
+			->caller( __METHOD__ )
+			->fetchRowCount();
 	}
 
 	/**
@@ -313,18 +329,9 @@ class PendingChangesPager extends TablePager {
 		$headerCells = '';
 
 		foreach ( $fields as $field => $labelKey ) {
-			$class = ( $field === 'review' || $field === 'history' ) ? 'cdx-table__table__cell--align-center' : '';
+			$class = $field === 'review' ? 'cdx-table__table__cell--align-center' : '';
 
-			if ( $field === 'history' ) {
-				$headerCells .= Html::rawElement(
-					'th',
-					[ 'scope' => 'col', 'class' => $class ],
-					Html::rawElement(
-						'span',
-						[ 'class' => 'fr-cdx-icon-clock', 'aria-hidden' => 'true' ]
-					)
-				);
-			} elseif ( $this->isFieldSortable( $field ) ) {
+			if ( $this->isFieldSortable( $field ) ) {
 				$isCurrentSortField = ( $this->mSort === $field );
 				$currentAsc = $this->getRequest()->getVal( 'asc', '1' );
 
@@ -365,7 +372,7 @@ class PendingChangesPager extends TablePager {
 								'class' => 'cdx-table__table__sort-button',
 								'aria-selected' => $isCurrentSortField ? 'true' : 'false'
 							],
-							$this->msg( $labelKey )->text() . ' ' .
+							$this->msg( $labelKey )->escaped() . ' ' .
 							Html::rawElement(
 								'span',
 								[ 'class' => 'cdx-icon cdx-icon--small cdx-table__table__sort-icon ' .
@@ -381,7 +388,7 @@ class PendingChangesPager extends TablePager {
 					Html::rawElement(
 						'span',
 						[ 'class' => 'cdx-table__th-content' ],
-						$this->msg( $labelKey )->text()
+						$this->msg( $labelKey )->escaped()
 					)
 				);
 			}
@@ -423,8 +430,10 @@ class PendingChangesPager extends TablePager {
 		$pendingCount = $this->getPendingCount();
 		$formattedCount = $this->getLanguage()->formatNum( $pendingCount );
 		$chip = Html::element( 'strong', [ 'class' => 'cdx-info-chip' ], $formattedCount );
-		$message = $this->msg( 'pendingchanges-table-footer', $chip )
-			->numParams( $pendingCount )->text();
+		$message = $this->msg( 'pendingchanges-table-footer' )
+			->rawParams( $chip )
+			->numParams( $pendingCount )
+			->escaped();
 
 		return Html::rawElement(
 			'div',

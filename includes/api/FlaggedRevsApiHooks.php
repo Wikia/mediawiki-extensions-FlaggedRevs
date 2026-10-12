@@ -1,28 +1,38 @@
 <?php
-// phpcs:disable MediaWiki.NamingConventions.LowerCamelFunctionsName.FunctionName
 
-use MediaWiki\Api\ApiBase;
 use MediaWiki\Api\ApiQueryRevisions;
 use MediaWiki\Api\Hook\APIGetAllowedParamsHook;
 use MediaWiki\Api\Hook\APIQueryAfterExecuteHook;
-use MediaWiki\MediaWikiServices;
+use Wikimedia\ParamValidator\ParamValidator;
+use Wikimedia\Rdbms\IConnectionProvider;
 
 class FlaggedRevsApiHooks implements
 	APIGetAllowedParamsHook,
 	APIQueryAfterExecuteHook
 {
 
+	public function __construct(
+		private readonly IConnectionProvider $dbProvider
+	) {
+	}
+
 	/**
+	 * Add rvprop=flagged to action=query&prop=revisions. Only shows up in the results if the page
+	 * has a stable revision.
+	 *
 	 * @inheritDoc
 	 */
 	public function onAPIGetAllowedParams( $module, &$params, $flags ) {
 		if ( !$module instanceof ApiQueryRevisions ) {
 			return;
 		}
-		$params['prop'][ApiBase::PARAM_TYPE][] = 'flagged';
+		$params['prop'][ParamValidator::PARAM_TYPE][] = 'flagged';
 	}
 
 	/**
+	 * Add rvprop=flagged to action=query&prop=revisions. Only shows up in the results if the page
+	 * has a stable revision.
+	 *
 	 * @inheritDoc
 	 */
 	public function onAPIQueryAfterExecute( $module ) {
@@ -58,8 +68,7 @@ class FlaggedRevsApiHooks implements
 		}
 
 		// Construct SQL Query
-		$db = MediaWikiServices::getInstance()->getConnectionProvider()
-			->getReplicaDatabase( false, 'api' );
+		$db = $this->dbProvider->getReplicaDatabase();
 
 		$qb = $db->newSelectQueryBuilder()
 			->select( [

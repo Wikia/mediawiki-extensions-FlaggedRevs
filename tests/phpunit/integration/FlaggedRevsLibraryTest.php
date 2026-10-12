@@ -4,7 +4,7 @@ use MediaWiki\Extension\Scribunto\Tests\Engines\LuaCommon\LuaEngineTestBase;
 use MediaWiki\Title\Title;
 
 if ( !class_exists( LuaEngineTestBase::class ) ) {
-	class_alias( MediaWikiIntegrationTestCase::class, LuaEngineTestBase::class );
+	return;
 }
 
 /**
@@ -22,11 +22,9 @@ class FlaggedRevsLibraryTest extends LuaEngineTestBase {
 
 		$class = new ReflectionClass( FlaggableWikiPage::class );
 		$pageConfig = $class->getProperty( 'pageConfig' );
-		$pageConfig->setAccessible( true );
 		$mDataLoaded = $class->getProperty( 'mDataLoaded' );
-		$mDataLoaded->setAccessible( true );
 
-		$title = Title::newFromText( 'Page without FR' );
+		$title = Title::makeTitle( NS_MAIN, 'Page without FR' );
 		$article = FlaggableWikiPage::getTitleInstance( $title );
 		$pageConfig->setValue( $article, [
 			'override'   => 0,
@@ -35,7 +33,7 @@ class FlaggedRevsLibraryTest extends LuaEngineTestBase {
 		] );
 		$mDataLoaded->setValue( $article, true );
 
-		$title = Title::newFromText( 'Page with FR' );
+		$title = Title::makeTitle( NS_MAIN, 'Page with FR' );
 		$article = FlaggableWikiPage::getTitleInstance( $title );
 		$pageConfig->setValue( $article, [
 			'override'   => 1,

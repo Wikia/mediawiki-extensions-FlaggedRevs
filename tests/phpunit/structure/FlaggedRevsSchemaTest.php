@@ -2,7 +2,7 @@
 
 declare( strict_types=1 );
 
-namespace MediaWiki\Extensions\FlaggedRevs\Tests\Structure;
+namespace MediaWiki\Extension\FlaggedRevs\Tests\Structure;
 
 use MediaWiki\Tests\Structure\AbstractSchemaTestBase;
 
@@ -10,6 +10,7 @@ use MediaWiki\Tests\Structure\AbstractSchemaTestBase;
  * @coversNothing
  */
 class FlaggedRevsSchemaTest extends AbstractSchemaTestBase {
+
 	protected static function getSchemasDirectory(): string {
 		return __DIR__ . '/../../../includes/backend/schema';
 	}

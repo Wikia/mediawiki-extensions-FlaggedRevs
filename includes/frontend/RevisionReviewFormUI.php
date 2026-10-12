@@ -16,16 +16,12 @@ use MediaWiki\User\User;
  * NOTE: use ONLY for diff-to-stable views and page version views
  */
 class RevisionReviewFormUI {
-	private User $user;
-	private FlaggableWikiPage $article;
+	private readonly User $user;
+	private readonly WebRequest $request;
 	/** A notice inside the review box at the top (HTML) */
 	private string $topNotice = '';
 	/** A notice inside the review box at the bottom (HTML) */
 	private string $bottomNotice = '';
-	/** @var array<int,array<string,int>>|null */
-	private ?array $templateIds = null;
-	private WebRequest $request;
-	private RevisionRecord $revRecord;
 	private ?RevisionRecord $refRevRecord = null;
 
 	/**
@@ -33,13 +29,11 @@ class RevisionReviewFormUI {
 	 */
 	public function __construct(
 		IContextSource $context,
-		FlaggableWikiPage $article,
-		RevisionRecord $revRecord
+		private readonly FlaggableWikiPage $article,
+		private readonly RevisionRecord $revRecord,
 	) {
 		$this->user = $context->getUser();
 		$this->request = $context->getRequest();
-		$this->article = $article;
-		$this->revRecord = $revRecord;
 	}
 
 	/**
@@ -66,14 +60,6 @@ class RevisionReviewFormUI {
 	 */
 	public function setBottomNotice( string $notice ): void {
 		$this->bottomNotice = $notice;
-	}
-
-	/**
-	 * Set the template version parameters of what the user is viewing
-	 * @param array<int,array<string,int>> $templateIds
-	 */
-	public function setIncludeVersions( array $templateIds ): void {
-		$this->templateIds = $templateIds;
 	}
 
 	/**

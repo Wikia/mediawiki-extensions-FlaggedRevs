@@ -1,6 +1,7 @@
 {
 	"@metadata": {
 		"authors": [
+			"A smart kitten",
 			"Cekli829",
 			"NMW03",
 			"Nemoralis",
@@ -19,7 +20,7 @@
 	"pendingchanges-category": "Kateqoriya:",
 	"pendingchanges-limit": "Limit:",
 	"pendingchanges-edit-tag": "Redaktə etiketi:",
-	"pendingchanges-edit-tag-any": "Hərhansısa bir etiket:",
+	"pendingchanges-edit-tag-any": "İstənilən teq",
 	"pendingchanges-onwatchlist": "İzləmə siyahımdakı səhifələr",
 	"pendingchanges-stable": "Sabit versiya standartdır",
 	"pendingchanges-diff": "Yoxla",
@@ -29,11 +30,8 @@
 	"pendingchanges-table-page": "Səhifə",
 	"pendingchanges-table-size": "Ölçü",
 	"pendingchanges-table-pending-since": "Tarix",
-	"pendingchanges-table-quality": "Keyfiyyət",
 	"pendingchanges-table-watching": "Aktiv İzləyicilər",
-	"pendingchanges-table-history": "Tarixçə",
 	"pendingchanges-table-review": "Yoxla",
-	"pendingchanges-table-revision-history": "Tarixçə",
-	"pendingchanges-table-footer": "Hazırda {{PLURAL:$1|$1 dəyişiklik}} gözləyir",
+	"pendingchanges-table-footer": "Hazırda {{PLURAL:$2|$1 dəyişiklik}} gözləyir",
 	"pendingchanges-filter-submit-button-text": "Gözləyən dəyişiklikləri filtrlə"
 }

@@ -24,7 +24,7 @@
 	"pendingchanges-limit": "Limit:",
 	"pendingchanges-edit-tag": "Änderungsmarkierung:",
 	"pendingchanges-edit-tag-any": "Jede Markierung",
-	"pendingchanges-onwatchlist": "nur Seiten auf meiner Beobachtungsliste",
+	"pendingchanges-onwatchlist": "Seiten auf meiner Beobachtungsliste",
 	"pendingchanges-stable": "Die stabile Version ist Standard",
 	"pendingchanges-diff": "Sichten",
 	"pendingchanges-size": "Maximale Änderungsgröße in Byte:",
@@ -33,11 +33,8 @@
 	"pendingchanges-table-page": "Seite",
 	"pendingchanges-table-size": "Größe",
 	"pendingchanges-table-pending-since": "Seit",
-	"pendingchanges-table-quality": "Qualität",
 	"pendingchanges-table-watching": "Aktive Beobachter",
-	"pendingchanges-table-history": "Versionsgeschichte",
 	"pendingchanges-table-review": "Überprüfen",
-	"pendingchanges-table-revision-history": "Versionsgeschichte",
-	"pendingchanges-table-footer": "Derzeit {{PLURAL:$1|ist $1 Änderung|sind $1 Änderungen}} ausstehend",
+	"pendingchanges-table-footer": "Derzeit {{PLURAL:$2|ist $1 Änderung|sind $1 Änderungen}} ausstehend",
 	"pendingchanges-filter-submit-button-text": "Ausstehende Änderungen filtern"
 }

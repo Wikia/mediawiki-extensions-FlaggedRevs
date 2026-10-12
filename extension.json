@@ -10,7 +10,7 @@
 	"license-name": "GPL-2.0-or-later",
 	"type": "specialpage",
 	"requires": {
-		"MediaWiki": ">= 1.44"
+		"MediaWiki": ">= 1.47.0"
 	},
 	"callback": "FlaggedRevsHooks::onRegistration",
 	"ActionFilteredLogs": {
@@ -56,7 +56,12 @@
 		}
 	},
 	"APIModules": {
-		"review": "ApiReview",
+		"review": {
+			"class": "ApiReview",
+			"services": [
+				"RevisionLookup"
+			]
+		},
 		"flagconfig": "ApiFlagConfig"
 	},
 	"APIPropModules": {
@@ -71,7 +76,11 @@
 		{
 			"path": "/flaggedrevs/internal/review/{target}",
 			"method": "POST",
-			"class": "MediaWiki\\Extension\\FlaggedRevs\\Rest\\ReviewHandler"
+			"class": "MediaWiki\\Extension\\FlaggedRevs\\Rest\\ReviewHandler",
+			"services": [
+				"PermissionManager",
+				"ReadOnlyMode"
+			]
 		}
 	],
 	"AvailableRights": [
@@ -140,9 +149,6 @@
 			"autoreview": true
 		}
 	},
-	"JobClasses": {
-		"flaggedrevs_CacheUpdate": "FRExtraCacheUpdateJob"
-	},
 	"LogActions": {
 		"rights/erevoke": "rights-editor-revoke"
 	},
@@ -201,14 +207,10 @@
 		"FRPageConfig": "includes/backend/FRPageConfig.php",
 		"FlaggedRevsLog": "includes/backend/FlaggedRevsLog.php",
 		"FlaggedRevsStats": "includes/backend/FlaggedRevsStats.php",
-		"FRExtraCacheUpdate": "includes/backend/FRExtraCacheUpdate.php",
-		"FRExtraCacheUpdateJob": "includes/backend/FRExtraCacheUpdateJob.php",
-		"FRDependencyUpdate": "includes/backend/FRDependencyUpdate.php",
 		"FRStableVersionUpdate": "includes/backend/FRStableVersionUpdate.php",
 		"FRInclusionManager": "includes/backend/FRInclusionManager.php",
 		"FlaggableWikiPage": "includes/backend/FlaggableWikiPage.php",
 		"FlaggedRevision": "includes/backend/FlaggedRevision.php",
-		"FlaggedRevsParserCache": "includes/backend/FlaggedRevsParserCache.php",
 		"FRGenericSubmitForm": "includes/business/FRGenericSubmitForm.php",
 		"RevisionReviewForm": "includes/business/RevisionReviewForm.php",
 		"PageStabilityForm": "includes/business/PageStabilityForm.php",
@@ -306,28 +308,12 @@
 				"revreview-submit-unreview",
 				"revreview-submit-reviewed",
 				"revreview-submit-unreviewed",
-				"revreview-submitting",
-				"actioncomplete",
-				"actionfailed"
+				"revreview-submitting"
 			],
 			"dependencies": [
 				"mediawiki.util",
 				"mediawiki.user",
 				"mediawiki.jqueryMsg"
-			]
-		},
-		"ext.flaggedRevs.icons": {
-			"selectorWithoutVariant": ".flaggedrevs-icon-{name}",
-			"class": "MediaWiki\\ResourceLoader\\OOUIIconPackModule",
-			"variants": {},
-			"useDataURI": false,
-			"icons": [
-				"expand",
-				"block",
-				"check",
-				"eye",
-				"articleSearch",
-				"articleCheck"
 			]
 		}
 	},
@@ -343,7 +329,6 @@
 		"ArticleUndelete": "main",
 		"ArticleUpdateBeforeRedirect": "ui",
 		"ArticleViewHeader": "ui",
-		"AutopromoteCondition": "main",
 		"BeforePageDisplay": "ui",
 		"BeforeRevertedTagUpdate": "main",
 		"CategoryPageView": "ui",
@@ -355,22 +340,21 @@
 			"contributions"
 		],
 		"ContributionsLineEnding": "ui",
-		"DeleteAccount": "FlaggedRevsHooks::onDeleteAccount",
+		"DeleteAccount": "usermerge",
 		"DifferenceEngineViewHeader": "ui",
-		"EchoGetDefaultNotifiedUsers": "FlaggedRevsHooks::onEchoGetDefaultNotifiedUsers",
+		"BeforeCreateEchoEvent": "echo",
 		"EditPageBeforeEditButtons": "ui",
 		"EditPageGetCheckboxesDefinition": "ui",
 		"EditPageNoSuchSection": "ui",
 		"GetPreferences": "ui",
 		"getUserPermissionsErrors": "main",
-		"GoogleNewsSitemap::Query": "FlaggedRevsHooks::gnsmQueryModifier",
 		"InfoAction": "ui",
 		"InitializeArticleMaybeRedirect": "ui",
 		"LoadExtensionSchemaUpdates": "updater",
-		"MagicWordwgVariableIDs": "main",
+		"GetMagicVariableIDs": "main",
 		"MakeGlobalVariablesScript": "ui",
 		"MediaWikiServices": "services",
-		"MergeAccountFromTo": "FlaggedRevsHooks::onMergeAccountFromTo",
+		"MergeAccountFromTo": "usermerge",
 		"NewDifferenceEngine": "ui",
 		"RevisionFromEditComplete": "main",
 		"PageSaveComplete": "main",
@@ -396,41 +380,65 @@
 		"TitleGetEditNotices": "ui",
 		"UserGetRights": "main",
 		"UserLoadAfterLoadFromSession": "main",
-		"UserMergeAccountFields": "FlaggedRevsHooks::onUserMergeAccountFields",
+		"UserMergeAccountFields": "usermerge",
+		"UserRequirementsCondition": "main",
+		"UserRequirementsConditionDisplay": "main",
 		"WikiExporter::dumpStableQuery": "main"
 	},
 	"HookHandlers": {
 		"api": {
 			"class": "FlaggedRevsApiHooks",
-			"services": []
+			"services": [
+				"ConnectionProvider"
+			]
 		},
 		"contributions": {
-			"class": "\\MediaWiki\\Extension\\FlaggedRevs\\Backend\\FlaggedRevsContributionsHooks",
+			"class": "MediaWiki\\Extension\\FlaggedRevs\\Backend\\FlaggedRevsContributionsHooks",
 			"services": []
+		},
+		"echo": {
+			"class": "MediaWiki\\Extension\\FlaggedRevs\\Backend\\EchoHooks"
 		},
 		"main": {
 			"class": "FlaggedRevsHooks",
 			"services": [
 				"MainConfig",
+				"ConnectionProvider",
 				"PermissionManager",
+				"RestrictionStore",
 				"RevisionLookup",
 				"UserNameUtils",
-				"UserIdentityUtils"
+				"UserIdentityUtils",
+				"UserFactory",
+				"MainWANObjectCache"
 			]
 		},
 		"services": {
-			"class": "\\MediaWiki\\Extension\\FlaggedRevs\\Backend\\FlaggedRevsMediaWikiServicesHooks"
+			"class": "MediaWiki\\Extension\\FlaggedRevs\\Backend\\FlaggedRevsMediaWikiServicesHooks"
 		},
 		"updater": {
 			"class": "FlaggedRevsUpdaterHooks",
 			"services": []
 		},
+		"usermerge": {
+			"class": "MediaWiki\\Extension\\FlaggedRevs\\Backend\\UserMergeHooks"
+		},
 		"ui": {
 			"class": "FlaggedRevsUIHooks",
-			"services": []
+			"services": [
+				"ActorStore",
+				"ConnectionProvider",
+				"LinkRenderer",
+				"LinksMigration",
+				"MainWANObjectCache",
+				"PermissionManager",
+				"ReadOnlyMode",
+				"SpecialPageFactory",
+				"RecentChangeLookup"
+			]
 		},
 		"scribunto": {
-			"class": "\\MediaWiki\\Extension\\FlaggedRevs\\Backend\\ScribuntoHooks",
+			"class": "MediaWiki\\Extension\\FlaggedRevs\\Backend\\ScribuntoHooks",
 			"services": []
 		}
 	},
@@ -501,12 +509,6 @@
 				}
 			}
 		},
-		"FlaggedRevsTagsAuto": {
-			"description": "For each tag, what is the highest level that it can be auto-reviewed to? $wgFlaggedRevsAutoReview must be enabled for this to apply",
-			"value": {
-				"accuracy": 1
-			}
-		},
 		"FlaggedRevsRestrictionLevels": {
 			"description": "Restriction levels for 'autoreview'/'review' rights. When a level is selected for a page, an edit made by a user will not be auto-reviewed if the user lacks the specified permission. Levels are set at the Stabilization special page.",
 			"value": [
@@ -537,7 +539,7 @@
 				"  Always use the current version of templates",
 				"2 - (FR_INCLUDES_STABLE)",
 				"  For each template, check if a version of it was used when the page was reviewed and if the template itself has a stable version; use the newest those versions",
-				"NOTE: We may have templates that do not have stable version. Also, given situational inclusion of templates (e.g. parser functions selecting template X or Y based on date) there may also be no \"review time version\" revision ID for a template used on a page. In such cases, we select the current (unreviewed) revision."
+				"NOTE: We may have templates that do not have stable version. In such cases, we select the current (unreviewed) revision."
 			],
 			"value": 2
 		}

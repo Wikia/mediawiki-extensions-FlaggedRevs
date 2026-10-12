@@ -1,16 +1,20 @@
 <?php
 
+use MediaWiki\Config\ConfigException;
 use MediaWiki\Exception\MWException;
+use MediaWiki\Feed\ChannelFeed;
 use MediaWiki\Feed\FeedItem;
 use MediaWiki\Feed\FeedUtils;
 use MediaWiki\Html\Html;
 use MediaWiki\MainConfigNames;
-use MediaWiki\MediaWikiServices;
 use MediaWiki\RecentChanges\ChangesList;
-use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Revision\RevisionLookup;
+use MediaWiki\SpecialPage\IncludableSpecialPage;
+use MediaWiki\SpecialPage\SpecialPageFactory;
+use MediaWiki\Title\NamespaceInfo;
 use MediaWiki\Title\Title;
 
-class PendingChanges extends SpecialPage {
+class PendingChanges extends IncludableSpecialPage {
 
 	private ?PendingChangesPager $pager = null;
 	private int $currentUnixTS;
@@ -20,14 +24,17 @@ class PendingChanges extends SpecialPage {
 	private ?int $size;
 	private bool $watched;
 
-	public function __construct() {
+	public function __construct(
+		private readonly NamespaceInfo $namespaceInfo,
+		private readonly RevisionLookup $revisionLookup,
+		private readonly SpecialPageFactory $specialPageFactory,
+	) {
 		parent::__construct( 'PendingChanges' );
-		$this->mIncludable = true;
 	}
 
 	/**
 	 * @inheritDoc
-	 * @throws MWException
+	 * @throws ConfigException
 	 */
 	public function execute( $subPage ) {
 		$request = $this->getRequest();
@@ -122,7 +129,7 @@ class PendingChanges extends SpecialPage {
 		$form .= Html::rawElement(
 			'div',
 			[ 'class' => 'cdx-field__item' ],
-			FlaggedRevsHTML::getEditTagFilterMenu( $this->tagFilter )
+			FlaggedRevsHTML::getEditTagFilterMenu( $this->getContext(), $this->tagFilter )
 		);
 
 		$form .= Html::rawElement(
@@ -277,7 +284,7 @@ class PendingChanges extends SpecialPage {
 	/**
 	 * Output a subscription feed listing recent edits to this page.
 	 * @param string $type
-	 * @throws MWException
+	 * @throws ConfigException
 	 */
 	private function feed( string $type ) {
 		if ( !$this->getConfig()->get( MainConfigNames::Feed ) ) {
@@ -296,23 +303,23 @@ class PendingChanges extends SpecialPage {
 			$this->msg( 'tagline' )->text(),
 			$this->getPageTitle()->getFullURL()
 		);
+		/** @var ChannelFeed $feed */
 		$this->pager->mLimit = min( $this->getConfig()->get( MainConfigNames::FeedLimit ), $this->pager->mLimit );
 
-		$feed->outHeader();
+		$feed->outputHeader( $this->getOutput() );
 		if ( $this->pager->getNumRows() > 0 ) {
 			foreach ( $this->pager->mResult as $row ) {
-				$feed->outItem( $this->feedItem( $row ) );
+				$feed->outputItem( $this->feedItem( $row ), $this->getOutput() );
 			}
 		}
-		$feed->outFooter();
+		$feed->outputFooter( $this->getOutput() );
 	}
 
 	private function feedTitle(): string {
 		$languageCode = $this->getConfig()->get( MainConfigNames::LanguageCode );
 		$sitename = $this->getConfig()->get( MainConfigNames::Sitename );
 
-		$page = MediaWikiServices::getInstance()->getSpecialPageFactory()
-			->getPage( 'PendingChanges' );
+		$page = $this->specialPageFactory->getPage( 'PendingChanges' );
 		$desc = $page->getDescription();
 		return "$sitename - $desc [$languageCode]";
 	}
@@ -329,9 +336,8 @@ class PendingChanges extends SpecialPage {
 		}
 
 		$date = $row->pending_since;
-		$services = MediaWikiServices::getInstance();
-		$comments = $services->getNamespaceInfo()->getTalkPage( $title );
-		$curRevRecord = $services->getRevisionLookup()->getRevisionByTitle( $title );
+		$comments = $this->namespaceInfo->getTalkPage( $title );
+		$curRevRecord = $this->revisionLookup->getRevisionByTitle( $title );
 		$currentComment = $curRevRecord->getComment() ? $curRevRecord->getComment()->text : '';
 		$currentUserText = $curRevRecord->getUser() ? $curRevRecord->getUser()->getName() : '';
 		return new FeedItem(
@@ -346,14 +352,16 @@ class PendingChanges extends SpecialPage {
 			$title->getFullURL(),
 			$date,
 			$currentUserText,
-			$comments
+			Title::newFromLinkTarget( $comments )->getPrefixedText()
 		);
 	}
 
 	public function formatRow( stdClass $row ): string {
 		$css = '';
 		$title = Title::newFromRow( $row );
-		$size = ChangesList::showCharacterDifference( $row->rev_len, $row->page_len );
+		$size = ChangesList::showCharacterDifference(
+			$row->rev_len, $row->page_len, $this->getContext()
+		);
 		# Page links...
 		$linkRenderer = $this->getLinkRenderer();
 
@@ -396,7 +404,7 @@ class PendingChanges extends SpecialPage {
 				'class' => 'cdx-docs-link',
 				'href' => $title->getFullURL( [ 'diff' => 'cur', 'oldid' => $row->stable ] )
 			],
-			$this->msg( 'pendingchanges-diff' )->text()
+			$this->msg( 'pendingchanges-diff' )->escaped()
 		);
 		# Is anybody watching?
 		// Only show information to users with the `unwatchedpages` who could find this

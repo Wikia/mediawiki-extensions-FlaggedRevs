@@ -7,18 +7,29 @@ use MediaWiki\Html\Html;
 use MediaWiki\Linker\Linker;
 use MediaWiki\Logging\LogEventsList;
 use MediaWiki\Logging\LogPage;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Permissions\PermissionManager;
 use MediaWiki\SpecialPage\UnlistedSpecialPage;
 use MediaWiki\Title\Title;
-use MediaWiki\Xml\Xml;
+use MediaWiki\User\Options\UserOptionsLookup;
+use MediaWiki\Watchlist\WatchlistManager;
+use MediaWiki\Xml\XmlSelect;
 
 /** Assumes $wgFlaggedRevsProtection is off */
 class Stabilization extends UnlistedSpecialPage {
 	/** @var PageStabilityGeneralForm|null */
 	private $form = null;
 
-	public function __construct() {
-		parent::__construct( 'Stabilization', 'stablesettings' );
+	public function __construct(
+		private readonly PermissionManager $permissionManager,
+		private readonly UserOptionsLookup $userOptionsLookup,
+		private readonly WatchlistManager $watchlistManager,
+	) {
+		parent::__construct( 'Stabilization' );
+	}
+
+	/** @inheritDoc */
+	public function getRestriction(): string {
+		return 'stablesettings';
 	}
 
 	/**
@@ -47,11 +58,10 @@ class Stabilization extends UnlistedSpecialPage {
 
 		# Let anyone view, but not submit...
 		if ( $request->wasPosted() ) {
-			$pm = MediaWikiServices::getInstance()->getPermissionManager();
-			if ( !$pm->userHasRight( $user, 'stablesettings' ) ) {
+			if ( !$this->permissionManager->userHasRight( $user, 'stablesettings' ) ) {
 				throw new PermissionsError( 'stablesettings' );
 			}
-			if ( $pm->isBlockedFrom( $user, $title, !$confirmed ) ) {
+			if ( $this->permissionManager->isBlockedFrom( $user, $title, !$confirmed ) ) {
 				// @phan-suppress-next-line PhanTypeMismatchArgumentNullable Guaranteed via isBlockedFrom() above
 				throw new UserBlockedError( $user->getBlock( !$confirmed ) );
 			}
@@ -134,14 +144,19 @@ class Stabilization extends UnlistedSpecialPage {
 		if ( $defaultReasons->isDisabled() ) {
 			$defaultReasons = $this->msg( 'protect-dropdown' );
 		}
-		$reasonDropdown = Xml::listDropdown(
-			'wpReasonSelection',
+
+		$reasonDropdown = new XmlSelect( 'wpReasonSelection', 'wpReasonSelection' );
+
+		$dropdownOptions = Html::listDropdownOptions(
 			$defaultReasons->inContentLanguage()->text(),
-			$this->msg( 'protect-otherreason-op' )->inContentLanguage()->escaped(),
-			$form->getReasonSelection(),
-			'mwStabilize-reason',
-			4
+			[
+				'other' => $this->msg( 'protect-otherreason-op' )->inContentLanguage()->text()
+			]
 		);
+		$reasonDropdown->addOptions( $dropdownOptions );
+		$reasonDropdown->setDefault( $form->getReasonSelection() );
+		$reasonDropdown->setAttribute( 'class', 'mwStabilize-reason' );
+
 		$scExpiryOptions = $this->msg( 'protect-expiry-options' )->inContentLanguage()->text();
 		$showProtectOptions = ( $scExpiryOptions !== '-' && $form->isAllowed() );
 		$dropdownOptions = []; // array of <label,value>
@@ -175,21 +190,35 @@ class Stabilization extends UnlistedSpecialPage {
 		# Build up the form...
 		$s .= Html::openElement( 'form', [ 'name' => 'stabilization',
 			'action' => $this->getPageTitle()->getLocalURL(), 'method' => 'post' ] );
-		# Add stable version override and selection options
+		# Add "Revision displayed on default page view"
 		$s .=
-			Xml::fieldset( $this->msg( 'stabilization-def' )->text() ) . "\n" .
-			Xml::radioLabel( $this->msg( 'stabilization-def1' )->text(), 'wpStableconfig-override', '1',
-				'default-stable', $form->getOverride() == 1, $this->disabledAttr() ) .
-				'<br />' . "\n" .
-			Xml::radioLabel( $this->msg( 'stabilization-def2' )->text(), 'wpStableconfig-override', '0',
-				'default-current', $form->getOverride() == 0, $this->disabledAttr() ) . "\n" .
+			Html::openElement( 'fieldset' ) .
+			Html::element( 'legend', [], $this->msg( 'stabilization-def' )->text() ) . "\n" .
+			Html::radio( 'wpStableconfig-override', $form->getOverride() == 1, array_merge(
+				[
+					'id' => 'default-stable',
+					'value' => '1',
+				],
+				$this->disabledAttr()
+			) ) . '&nbsp;' .
+			Html::label( $this->msg( 'stabilization-def1' )->text(), 'default-stable' ) . '<br>' . "\n" .
+			Html::radio( 'wpStableconfig-override', $form->getOverride() == 0, array_merge(
+				[
+					'id' => 'default-current',
+					'value' => '0',
+				],
+				$this->disabledAttr()
+			) ) . '&nbsp;' .
+			Html::label( $this->msg( 'stabilization-def2' )->text(), 'default-current' ) . "\n" .
 			Html::closeElement( 'fieldset' );
-		# Add autoreview restriction select
-		$s .= Xml::fieldset( $this->msg( 'stabilization-restrict' )->text() ) .
+		# Add "Review/auto-review restrictions"
+		$s .= Html::openElement( 'fieldset' ) .
+			Html::element( 'legend', [], $this->msg( 'stabilization-restrict' )->text() ) .
 			$this->buildSelector( $form->getAutoreview() ) .
-			Html::closeElement( 'fieldset' ) .
-
-			Xml::fieldset( $this->msg( 'stabilization-leg' )->text() ) .
+			Html::closeElement( 'fieldset' );
+		# Add "Confirm stable version settings"
+		$s .= Html::openElement( 'fieldset' ) .
+			Html::element( 'legend', [], $this->msg( 'stabilization-leg' )->text() ) .
 			Html::openElement( 'table' );
 		# Add expiry dropdown to form...
 		if ( $showProtectOptions && $form->isAllowed() ) {
@@ -213,7 +242,7 @@ class Stabilization extends UnlistedSpecialPage {
 		# Add custom expiry field to form...
 		$attribs = [ 'id' => "mwStabilizeExpiryOther",
 			'size' => 50,
-			'onkeyup' => 'onFRChangeExpiryField()' ] + $this->disabledAttr();
+			'oninput' => 'onFRChangeExpiryField()' ] + $this->disabledAttr();
 		$s .= "
 			<tr>
 				<td class='mw-label'>" .
@@ -228,11 +257,8 @@ class Stabilization extends UnlistedSpecialPage {
 		if ( $form->isAllowed() ) {
 			$watchAttribs = [ 'accesskey' => $this->msg( 'accesskey-watch' )->text(),
 				'id' => 'wpWatchthis' ];
-			$services = MediaWikiServices::getInstance();
-			$userOptionsLookup = $services->getUserOptionsLookup();
-			$watchlistManager = $services->getWatchlistManager();
-			$watchChecked = ( $userOptionsLookup->getOption( $user, 'watchdefault' )
-				|| $watchlistManager->isWatched( $user, $title ) );
+			$watchChecked = ( $this->userOptionsLookup->getOption( $user, 'watchdefault' )
+				|| $this->watchlistManager->isWatched( $user, $title ) );
 
 			$s .= ' <tr>
 					<td class="mw-label">' .
@@ -240,7 +266,7 @@ class Stabilization extends UnlistedSpecialPage {
 							'wpReasonSelection' ) .
 					'</td>
 					<td class="mw-input">' .
-						$reasonDropdown .
+						$reasonDropdown->getHTML() .
 					'</td>
 				</tr>
 				<tr>

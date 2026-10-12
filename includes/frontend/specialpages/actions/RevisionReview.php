@@ -1,11 +1,8 @@
 <?php
 
-use MediaWiki\Context\RequestContext;
 use MediaWiki\Exception\PermissionsError;
 use MediaWiki\Exception\UserBlockedError;
-use MediaWiki\MediaWikiServices;
 use MediaWiki\Permissions\PermissionManager;
-use MediaWiki\Session\CsrfTokenSet;
 use MediaWiki\SpecialPage\SpecialPage;
 use MediaWiki\SpecialPage\UnlistedSpecialPage;
 use MediaWiki\Title\Title;
@@ -16,14 +13,15 @@ class RevisionReview extends UnlistedSpecialPage {
 	/** @var Title|null */
 	private $title;
 
-	/** @var PermissionManager */
-	private $permissionManager;
+	public function __construct(
+		private readonly PermissionManager $permissionManager,
+	) {
+		parent::__construct( 'RevisionReview' );
+	}
 
-	public function __construct() {
-		parent::__construct( 'RevisionReview', 'review' );
-
-		// TODO use dependency injection
-		$this->permissionManager = MediaWikiServices::getInstance()->getPermissionManager();
+	/** @inheritDoc */
+	public function getRestriction(): string {
+		return 'review';
 	}
 
 	/**
@@ -88,8 +86,6 @@ class RevisionReview extends UnlistedSpecialPage {
 		# Rev ID
 		$form->setOldId( $request->getInt( 'oldid' ) );
 		$form->setRefId( $request->getInt( 'refid' ) );
-		# Special parameter mapping
-		$form->setTemplateParams( $request->getVal( 'templateParams' ) );
 		# Special token to discourage fiddling...
 		$form->setValidatedParams( $request->getVal( 'validatedParams' ) );
 		# Conflict handling
@@ -119,7 +115,7 @@ class RevisionReview extends UnlistedSpecialPage {
 
 		// Use confirmation screen for reject...
 		if ( $form->getAction() == RevisionReviewForm::ACTION_REJECT && !$request->getBool( 'wpRejectConfirm' ) ) {
-			$rejectForm = new RejectConfirmationFormUI( $form );
+			$rejectForm = new RejectConfirmationFormUI( $form, $this->getContext() );
 			[ $html, $status ] = $rejectForm->getHtml();
 			if ( $status === true ) {
 				// Success...
@@ -228,108 +224,5 @@ class RevisionReview extends UnlistedSpecialPage {
 			$linkRenderer->makeKnownLink( SpecialPage::getTitleFor( 'PendingChanges' ) )
 		)->escaped() . '</p>';
 		return $s;
-	}
-
-	/**
-	 * @param array $argsMap Typical params are oldid, refid, validatedParams,
-	 * templateParams, wpApprove, wpUnapprove, wpReject, wpReason, changetime, wpEditToken,
-	 * wpaccuracy, and target.
-	 * @return array
-	 */
-	public static function doReview( $argsMap ) {
-		$context = RequestContext::getMain();
-		$user = $context->getUser();
-		$out = $context->getOutput();
-		$request = $context->getRequest();
-		if ( MediaWikiServices::getInstance()->getReadOnlyMode()->isReadOnly() ) {
-			return [ 'error-html' => wfMessage( 'revreview-failed' )->parse() .
-				wfMessage( 'revreview-submission-invalid' )->parse() ];
-		}
-		// Make review interface object
-		$form = new RevisionReviewForm( $user );
-		$title = null; // target page
-		$editToken = ''; // edit token
-
-		foreach ( $argsMap as $par => $val ) {
-			switch ( $par ) {
-				case "target":
-					$title = Title::newFromURL( $val );
-					break;
-				case "oldid":
-					$form->setOldId( $val );
-					break;
-				case "refid":
-					$form->setRefId( $val );
-					break;
-				case "validatedParams":
-					$form->setValidatedParams( $val );
-					break;
-				case "templateParams":
-					$form->setTemplateParams( $val );
-					break;
-				case "wpApprove":
-					if ( $val ) {
-						$form->setAction( RevisionReviewForm::ACTION_APPROVE );
-					}
-					break;
-				case "wpUnapprove":
-					if ( $val ) {
-						$form->setAction( RevisionReviewForm::ACTION_UNAPPROVE );
-					}
-					break;
-				case "wpReject":
-					if ( $val ) {
-						$form->setAction( RevisionReviewForm::ACTION_REJECT );
-					}
-					break;
-				case "wpReason":
-					$form->setComment( $val ?? '' );
-					break;
-				case "changetime":
-					$form->setLastChangeTime( $val );
-					break;
-				case "wpEditToken":
-					$editToken = $val;
-					break;
-				case 'wp' . FlaggedRevs::getTagName():
-					$form->setTag( $val );
-					break;
-			}
-		}
-
-		# Valid target title?
-		if ( !$title ) {
-			return [ 'error-html' => wfMessage( 'notargettext' )->parse() ];
-		}
-
-		$form->setTitle( $title );
-		$form->setSessionKey( $request->getSessionData( 'wsFlaggedRevsKey' ) );
-
-		$form->ready(); // all params loaded
-		# Check session via user token
-		$userToken = new CsrfTokenSet( $request );
-		if ( !$userToken->matchToken( $editToken ) ) {
-			return [ 'error-html' => wfMessage( 'sessionfailure' )->parse() ];
-		}
-		# Basic permission checks...
-		$permStatus = MediaWikiServices::getInstance()->getPermissionManager()
-			->getPermissionStatus( 'review', $user, $title, PermissionManager::RIGOR_QUICK );
-		if ( !$permStatus->isGood() ) {
-			return [ 'error-html' => $out->parseAsInterface(
-				$out->formatPermissionStatus( $permStatus, 'review' )
-			) ];
-		}
-		# Try submission...
-		$status = $form->submit();
-		# Failure...
-		if ( $status !== true ) {
-			return [ 'error-html' => wfMessage( 'revreview-failed' )->parseAsBlock() .
-				'<p>' . wfMessage( $status )->escaped() . '</p>' ];
-		} elseif ( !$form->getAction() ) {
-			return [ 'error-html' => wfMessage( 'revreview-failed' )->parse() ];
-		}
-
-		# Sent new lastChangeTime TS to client for later submissions...
-		return [ 'change-time' => $form->getNewLastChangeTime() ];
 	}
 }

@@ -1,22 +1,15 @@
 <?php
 
+use MediaWiki\Extension\FlaggedRevs\Backend\FlaggedRevsParserCacheFactory;
 use MediaWiki\MediaWikiServices;
 
+/** @phpcs-require-sorted-array */
 return [
-
-	'FlaggedRevsParserCache' => static function ( MediaWikiServices $services ): FlaggedRevsParserCache {
-		return new FlaggedRevsParserCache(
-			$services
-				->getParserCacheFactory()
-				->getParserCache( FlaggedRevs::PARSER_CACHE_NAME )
-		);
-	},
-	'FlaggedRevsParsoidParserCache' => static function ( MediaWikiServices $services ): FlaggedRevsParserCache {
-		return new FlaggedRevsParserCache(
-			$services
-				->getParserCacheFactory()
-				->getParserCache( FlaggedRevs::PARSOID_PARSER_CACHE_NAME )
-		);
-	},
-
+	FlaggedRevsParserCacheFactory::SERVICE_NAME =>
+		static function ( MediaWikiServices $services ): FlaggedRevsParserCacheFactory {
+			return new FlaggedRevsParserCacheFactory(
+				$services->getParserCacheFactory(),
+				$services->getMainConfig(),
+			);
+		},
 ];
