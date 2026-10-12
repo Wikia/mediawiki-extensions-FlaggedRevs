@@ -4,11 +4,12 @@ use MediaWiki\Extension\Scribunto\Tests\Engines\LuaCommon\LuaEngineTestBase;
 use MediaWiki\Title\Title;
 
 if ( !class_exists( LuaEngineTestBase::class ) ) {
-	class_alias( MediaWikiIntegrationTestCase::class, LuaEngineTestBase::class );
+	return;
 }
 
 /**
  * @covers \FlaggedRevsScribuntoLuaLibrary
+ * @group Database
  */
 class FlaggedRevsLibraryTest extends LuaEngineTestBase {
 
@@ -22,9 +23,7 @@ class FlaggedRevsLibraryTest extends LuaEngineTestBase {
 
 		$class = new ReflectionClass( FlaggableWikiPage::class );
 		$pageConfig = $class->getProperty( 'pageConfig' );
-		$pageConfig->setAccessible( true );
 		$mDataLoaded = $class->getProperty( 'mDataLoaded' );
-		$mDataLoaded->setAccessible( true );
 
 		$title = Title::newFromText( 'Page without FR' );
 		$article = FlaggableWikiPage::getTitleInstance( $title );
