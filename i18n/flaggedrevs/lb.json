@@ -29,7 +29,7 @@
 	"flaggedrevs-hidereviewed-hide": "Verstoppen",
 	"flaggedrevs-hidereviewed-show": "Weisen",
 	"flaggedrevs-rcfilters-need-review-label": "Muss nogekuckt ginn",
-	"flaggedrevs-rcfilters-need-review-desc": "Ännerungen déi nogekuckt musse ginn",
+	"flaggedrevs-rcfilters-need-review-desc": "Ännerungen, déi nogekuckt musse ginn.",
 	"flaggedrevs-rcfilters-reviewed-label": "Nogekuckt",
 	"flaggedrevs-rcfilters-reviewed-desc": "Ännerungen, déi nogekuckt goufen.",
 	"flaggedrevs-rcfilters-not-reviewable-label": "Kee Sujet fir nozekucken",
@@ -99,7 +99,7 @@
 	"revreview-visibility-nostable": "'''Dës Säit huet keng [[{{MediaWiki:Validationpage}}|publizéiert Versioun]]; d'Astellunge vun der Säitestabilitéit kënnen  [{{fullurl:{{#Special:Stabilization}}|page={{FULLPAGENAMEE}}}} agestallt] ginn.'''",
 	"revreview-revnotfound": "Déi Versioun vun der Säit déi Dir gefrot hutt konnt net fonnt ginn. Kuckt d'URL no, déi Dir benotzt hutt fir op dës Säit ze kommen.",
 	"right-autoreview": "Versiounen automatesch als \"nogekuckt\" markéieren",
-	"right-autoreviewrestore": "Automatesch nokucke beim Zrécksetzen",
+	"right-autoreviewrestore": "Automatesch nokucke beim Zerécksetzen",
 	"right-movestable": "Publizéiert Säite réckelen",
 	"right-review": "Versiounen als \"nogekuckt\" markéieren",
 	"right-stablesettings": "Astelle wéi eng publizéiert Versioun erausgesicht an ugewise gëtt",
@@ -137,7 +137,9 @@
 	"validationpage": "{{ns:help}}:Validatioun vun der Säit",
 	"log-action-filter-review-accept": "Manuell akzeptéieren",
 	"log-action-filter-stable-config": "Nei Astellung",
+	"log-action-filter-stable-modify": "Konfiguratioun geännert",
 	"log-action-filter-stable-reset": "Zerécksetze vun der Konfiguratioun",
+	"log-action-filter-stable-move_stable": "Konfiguratioun geréckelt",
 	"fr-revision-info-dialog-cancel-button": "Ofbriechen",
 	"fr-revision-info-dialog-close-aria-label": "Zoumaachen"
 }
