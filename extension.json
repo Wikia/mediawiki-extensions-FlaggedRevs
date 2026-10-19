@@ -426,7 +426,9 @@
 		},
 		"ui": {
 			"class": "FlaggedRevsUIHooks",
-			"services": []
+			"services": [
+				"IConnectionProvider"
+			]
 		},
 		"scribunto": {
 			"class": "\\MediaWiki\\Extension\\FlaggedRevs\\Backend\\ScribuntoHooks",

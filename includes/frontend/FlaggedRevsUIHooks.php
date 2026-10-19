@@ -42,6 +42,7 @@ use MediaWiki\SpecialPage\Hook\SpecialPage_initListHook;
 use MediaWiki\SpecialPage\SpecialPage;
 use MediaWiki\Title\Title;
 use MediaWiki\Title\TitleValue;
+use Wikimedia\Rdbms\IConnectionProvider;
 use Wikimedia\Rdbms\IDBAccessObject;
 use Wikimedia\Rdbms\IReadableDatabase;
 use Wikimedia\Rdbms\RawSQLExpression;
@@ -81,6 +82,16 @@ class FlaggedRevsUIHooks implements
 	SpecialPage_initListHook,
 	TitleGetEditNoticesHook
 {
+    // Fandom-change: start
+    private IConnectionProvider $dbProvider;
+
+    public function __construct(
+		IConnectionProvider $dbProvider
+	) {
+		$this->dbProvider = $dbProvider;
+	}
+    // Fandom-change: end
+
 	/**
 	 * Add FlaggedRevs css/js.
 	 *
