@@ -427,7 +427,7 @@
 		"ui": {
 			"class": "FlaggedRevsUIHooks",
 			"services": [
-				"IConnectionProvider"
+				"ConnectionProvider"
 			]
 		},
 		"scribunto": {
